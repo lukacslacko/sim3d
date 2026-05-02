@@ -32,18 +32,18 @@
 
 <div id="ui">
   <h1>SIM3D — block affinity</h1>
-  <label>blocks <input id="nBlocks" type="number" min="1" max="2000" step="1" value="700"></label>
-  <label>sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="10"></label>
+  <label>blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="5000"></label>
+  <label>sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
   <hr>
-  <label>d_peak <input id="d_peak" type="number" step="0.05" value="0.75"></label>
-  <label>cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="3.0"></label>
-  <label>in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.7"></label>
-  <label>ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.4"></label>
-  <label>attraction <input id="attraction" type="number" step="0.1" value="-0.4"></label>
-  <label>bend (rad) <input id="bend" type="number" step="0.01" value="0"></label>
+  <label>d_peak <input id="d_peak" type="number" step="0.05" value="0.4"></label>
+  <label>cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="2.0"></label>
+  <label>in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.6"></label>
+  <label>ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.2"></label>
+  <label>attraction <input id="attraction" type="number" step="0.1" value="-1.2"></label>
+  <label>bend (rad) <input id="bend" type="number" step="0.01" value="0.7"></label>
   <hr>
   <label>dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
-  <label>damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.92"></label>
+  <label>damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.994"></label>
   <label>wall k <input id="wallK" type="number" step="0.1" value="1.0"></label>
   <label>force cap <input id="fCap" type="number" step="1" value="50"></label>
   <div class="row">
@@ -79,7 +79,7 @@ import {
 // ---------------------------------------------------------------------------
 const params = {
   ...DEFAULTS,
-  nBlocks: 700,
+  nBlocks: 5000,
   dtMul: 1,
 };
 

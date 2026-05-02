@@ -5,8 +5,8 @@
 // A block has its sheet normal along its local +Z axis.
 
 export const DEFAULTS = {
-  sphereR: 10,
-  damping: 0.92,
+  sphereR: 9,
+  damping: 0.994,
   wallK: 1.0,
   forceCap: 50,
   // Pair affinity parameters — see pairAffinity().
@@ -14,22 +14,22 @@ export const DEFAULTS = {
   // to act as an actual repulsion (energy → +∞ as d → 0) it should be NEGATIVE
   // (since -1/d × negative = +positive/d). Likewise `attraction` should be
   // negative to make the well at d_peak an actual energy minimum.
-  in_plane_repulsion:   -0.7,
-  orthogonal_repulsion: -1.4,
-  attraction:           -0.4,
-  d_peak:                0.75,
+  in_plane_repulsion:   -0.6,
+  orthogonal_repulsion: -1.2,
+  attraction:           -1.2,
+  d_peak:                0.4,
   // Interaction cutoff: the analytic energy is multiplied by a smooth mask
   // m(d) that is 1 for d ≤ cutoff/2 and tapers to 0 at d = cutoff. Pairs
   // beyond cutoff contribute nothing to force or torque, so the spatial-hash
   // skip in stepBlocks is exact (no truncation error).
-  cutoff: 3.0,
+  cutoff: 2.0,
   // Intrinsic plane bend (radians). Each block's reference plane is tilted
   // by `bend` toward its own normal direction, so the in-plane equilibrium
   // wants neighbors at angle `bend` above the plane instead of in it. With
   // both blocks of a pair wanting that, sheets pick up curvature ≈ bend
   // per neighbor — small values curl flat sheets into bowls; larger ones
   // close them into blob-like shells.
-  bend: 0.0,
+  bend: 0.7,
 };
 
 export function makeBlock(pos, quat) {

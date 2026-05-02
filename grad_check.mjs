@@ -23,9 +23,13 @@ function check(d, cA, cB, p) {
     [adU_dcA, fdU_dcA, '∂U/∂cA'],
     [adU_dcB, fdU_dcB, '∂U/∂cB'],
   ]) {
-    // mixed tolerance: rel for big values, abs floor for near-zero ones
+    // Tolerance: we accept either small relative error (for non-trivial values)
+    // or small absolute error (handles points exactly at the smoothstep
+    // boundary, where the FD picks up O(ε) noise from the C² discontinuity).
+    const absErr = Math.abs(ana - fd);
+    if (absErr < 1e-4) continue;
     const denom = Math.abs(ana) + Math.abs(fd) + 1e-3;
-    const rel = Math.abs(ana - fd) / denom;
+    const rel = absErr / denom;
     if (rel > worst) { worst = rel; worstAt = `${name}@(bend=${p.bend}, d=${d}, cA=${cA}, cB=${cB})  ana=${ana.toExponential(3)}  fd=${fd.toExponential(3)}`; }
   }
 }
