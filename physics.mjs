@@ -23,6 +23,13 @@ export const DEFAULTS = {
   // beyond cutoff contribute nothing to force or torque, so the spatial-hash
   // skip in stepBlocks is exact (no truncation error).
   cutoff: 3.0,
+  // Intrinsic plane bend (radians). Each block's reference plane is tilted
+  // by `bend` toward its own normal direction, so the in-plane equilibrium
+  // wants neighbors at angle `bend` above the plane instead of in it. With
+  // both blocks of a pair wanting that, sheets pick up curvature ≈ bend
+  // per neighbor — small values curl flat sheets into bowls; larger ones
+  // close them into blob-like shells.
+  bend: 0.0,
 };
 
 export function makeBlock(pos, quat) {
@@ -112,10 +119,36 @@ function smoothMaskDeriv(d, cutoff) {
   return (6 * t * t - 6 * t) / half;
 }
 
+// Bent angle factors. Returns [T, dT/dcA, dT/dcB] where
+//   T = ½ ( sin²(θ_a − β) + sin²(θ_b − β) )
+// with sin(θ_a) = cA, sin(θ_b) = −cB (the displacement points the opposite
+// way as seen from b), cos(θ_*) = √(1 − c*²) ≥ 0, and β = p.bend.
+//
+// Floor on (1 − c²) keeps the √'s derivative finite if a transient kick
+// drives a block to nearly-stacked. The equilibrium with bend > 0 sits
+// well away from |c| = 1, so this floor is only ever exercised in flight.
+function _bentT(cA, cB, p) {
+  const beta = p.bend;
+  if (beta === 0) {
+    const T = 0.5 * (cA*cA + cB*cB);
+    return [T, cA, cB];
+  }
+  const cb = Math.cos(beta), sb = Math.sin(beta);
+  const sq2A = 1 - cA*cA, sq2B = 1 - cB*cB;
+  const sqA = Math.sqrt(sq2A < 1e-8 ? 1e-8 : sq2A);
+  const sqB = Math.sqrt(sq2B < 1e-8 ? 1e-8 : sq2B);
+  const sA =  cA*cb - sqA*sb;   // sin(θ_a − β)
+  const sB = -cB*cb - sqB*sb;   // sin(θ_b − β),  θ_b uses −cB
+  const T = 0.5 * (sA*sA + sB*sB);
+  const dsA_dcA =  cb + (cA / sqA) * sb;       // d/dcA [cA cb − √(1−cA²) sb]
+  const dsB_dcB = -cb + (cB / sqB) * sb;       // d/dcB [−cB cb − √(1−cB²) sb]
+  return [T, sA * dsA_dcA, sB * dsB_dcB];
+}
+
 // Unmasked pair energy U₀(d, cA, cB). The cutoff multiplies this in
 // pairAffinity / pairAffinityGrad; isolated for clarity and reuse.
 function pairAffinityRaw(d, cA, cB, p) {
-  const T = 0.5 * (cA*cA + cB*cB);
+  const [T] = _bentT(cA, cB, p);
   const S = 1 - T;
   const dpk = d - p.d_peak;
   const W = 1 / (1 + dpk * dpk);
@@ -123,7 +156,7 @@ function pairAffinityRaw(d, cA, cB, p) {
   return -pre / d + S * p.attraction * W;
 }
 function pairAffinityRawGrad(d, cA, cB, p) {
-  const T = 0.5 * (cA*cA + cB*cB);
+  const [T, dT_dcA, dT_dcB] = _bentT(cA, cB, p);
   const S = 1 - T;
   const dpk = d - p.d_peak;
   const W = 1 / (1 + dpk * dpk);
@@ -131,7 +164,7 @@ function pairAffinityRawGrad(d, cA, cB, p) {
   const pre = p.in_plane_repulsion + (p.orthogonal_repulsion - p.in_plane_repulsion) * T;
   const dU_dd  = pre / (d * d) + S * p.attraction * dW_dd;
   const dU_dT  = -(p.orthogonal_repulsion - p.in_plane_repulsion) / d - p.attraction * W;
-  return [dU_dd, cA * dU_dT, cB * dU_dT];
+  return [dU_dd, dU_dT * dT_dcA, dU_dT * dT_dcB];
 }
 
 export function pairAffinity(d, cA, cB, p) {
