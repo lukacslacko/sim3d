@@ -69,7 +69,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
-  DEFAULTS, makeBlock, stepBlocks, randomQuat, randomPointInBall,
+  DEFAULTS, makeBlock, stepBlocks, refreshNormal, randomQuat, randomPointInBall,
 } from './physics.mjs';
 
 // ---------------------------------------------------------------------------
@@ -88,9 +88,13 @@ let scene, camera, renderer, controls, sphereMesh;
 let hexGeo, hexMat;
 let paused = false;
 
-function colorFor(i, n) {
-  const h = (i / Math.max(n, 1)) * 0.7 + 0.55;
-  return new THREE.Color().setHSL(h % 1, 0.55, 0.6);
+// Map a block's normal vector to RGB using |n| = (|x|, |y|, |z|). The hex
+// sheet is front/back symmetric (n and -n are the same pose), so taking the
+// absolute value is the right choice: a closed shell gets one continuous
+// color gradient across its surface instead of two opposite-color halves.
+// Equivalence class of opposite normals → same color, otherwise smooth.
+function applyColorFromNormal(mat, n) {
+  mat.color.setRGB(Math.abs(n[0]), Math.abs(n[1]), Math.abs(n[2]));
 }
 
 function buildScene() {
@@ -143,8 +147,9 @@ function rebuildBlocks() {
   const R = params.sphereR * 0.9;
   for (let i = 0; i < params.nBlocks; i++) {
     const b = makeBlock(randomPointInBall(R), randomQuat());
+    refreshNormal(b);
     const mat = hexMat.clone();
-    mat.color.copy(colorFor(i, params.nBlocks));
+    applyColorFromNormal(mat, b.normal);
     const mesh = new THREE.Mesh(hexGeo, mat);
     mesh.scale.setScalar(params.d_peak); // visual size tracks equilibrium spacing
     mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
@@ -166,6 +171,9 @@ function syncMeshes() {
   for (const b of blocks) {
     b.mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
     b.mesh.quaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
+    // b.normal was refreshed at the top of the last stepBlocks; one frame
+    // stale, but visually indistinguishable.
+    applyColorFromNormal(b.mesh.material, b.normal);
   }
 }
 
