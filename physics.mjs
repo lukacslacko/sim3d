@@ -161,7 +161,7 @@ export function applyPair(a, b, p) {
   _r[2] = b.pos[2] - a.pos[2];
   // Cheap reject before the sqrt: d² > cutoff² ⇒ mask is zero anyway.
   const d2 = _r[0]*_r[0] + _r[1]*_r[1] + _r[2]*_r[2];
-  if (d2 > p.cutoff * p.cutoff) return;
+  if (d2 > p.cutoff * p.cutoff) return 0;
   let d = Math.sqrt(d2);
   if (d < 1e-4) {
     // Degenerate overlap — kick apart along a random axis to break symmetry.
@@ -169,7 +169,7 @@ export function applyPair(a, b, p) {
     const rx = Math.random()-0.5, ry = Math.random()-0.5, rz = Math.random()-0.5;
     a.force[0] -= rx*k; a.force[1] -= ry*k; a.force[2] -= rz*k;
     b.force[0] += rx*k; b.force[1] += ry*k; b.force[2] += rz*k;
-    return;
+    return 1;
   }
   const inv_d = 1 / d;
   _rhat[0] = _r[0] * inv_d; _rhat[1] = _r[1] * inv_d; _rhat[2] = _r[2] * inv_d;
@@ -204,6 +204,7 @@ export function applyPair(a, b, p) {
   b.torque[0] -= dU_dcB * tbx;
   b.torque[1] -= dU_dcB * tby;
   b.torque[2] -= dU_dcB * tbz;
+  return 1;
 }
 
 // Wall: U_wall = wallK / (R - |pos|). Repels inward, blows up at the wall.
@@ -274,6 +275,11 @@ export function stepBlocks(blocks, dt, p) {
     cell.push(i);
   }
 
+  // Counts: pairs the spatial hash put through applyPair, and the subset that
+  // actually got past the d² ≤ cutoff² test (i.e. contributed force/torque).
+  let pairsChecked = 0;
+  let pairsComputed = 0;
+
   const M = cellsKey.length;
   for (let c = 0; c < M; c++) {
     const cell = grid.get(cellsKey[c]);
@@ -282,7 +288,8 @@ export function stepBlocks(blocks, dt, p) {
     for (let ii = 0; ii < cell.length; ii++) {
       const a = blocks[cell[ii]];
       for (let jj = ii + 1; jj < cell.length; jj++) {
-        applyPair(a, blocks[cell[jj]], p);
+        pairsChecked++;
+        pairsComputed += applyPair(a, blocks[cell[jj]], p);
       }
     }
     // (b) cross-cell pairs to forward neighbors
@@ -293,7 +300,8 @@ export function stepBlocks(blocks, dt, p) {
       for (let ii = 0; ii < cell.length; ii++) {
         const a = blocks[cell[ii]];
         for (let jj = 0; jj < ncell.length; jj++) {
-          applyPair(a, blocks[ncell[jj]], p);
+          pairsChecked++;
+          pairsComputed += applyPair(a, blocks[ncell[jj]], p);
         }
       }
     }
@@ -337,6 +345,8 @@ export function stepBlocks(blocks, dt, p) {
       b.quat[0] = nx*inv; b.quat[1] = ny*inv; b.quat[2] = nz*inv; b.quat[3] = nw*inv;
     }
   }
+
+  return { pairsChecked, pairsComputed };
 }
 
 // ---------------------------------------------------------------------------

@@ -159,6 +159,7 @@ function rebuildBlocks() {
 // ---------------------------------------------------------------------------
 const statsEl = document.getElementById('stats');
 let frame = 0, fpsTick = performance.now(), fps = 0;
+let lastStepStats = { pairsChecked: 0, pairsComputed: 0 };
 
 function syncMeshes() {
   for (const b of blocks) {
@@ -169,7 +170,7 @@ function syncMeshes() {
 
 function animate() {
   requestAnimationFrame(animate);
-  if (!paused) stepBlocks(blocks, 0.04 * params.dtMul, params);
+  if (!paused) lastStepStats = stepBlocks(blocks, 0.04 * params.dtMul, params);
   syncMeshes();
   controls.update();
   renderer.render(scene, camera);
@@ -179,7 +180,14 @@ function animate() {
   if (now - fpsTick > 500) {
     fps = (frame * 1000 / (now - fpsTick)) | 0;
     frame = 0; fpsTick = now;
-    statsEl.textContent = `${blocks.length} blocks · ${fps} fps · ${(blocks.length*(blocks.length-1)/2)|0} pairs/step`;
+    const N = blocks.length;
+    const totalPairs = (N * (N - 1) / 2) | 0;
+    const fmt = (n) => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'k' : String(n);
+    // total pairs · pairs the spatial hash visited · pairs within cutoff (force computed)
+    statsEl.textContent =
+      `${N} blocks · ${fps} fps · pairs/step  total ${fmt(totalPairs)} · `
+      + `checked ${fmt(lastStepStats.pairsChecked)} · `
+      + `computed ${fmt(lastStepStats.pairsComputed)}`;
   }
 }
 
