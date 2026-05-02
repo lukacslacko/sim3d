@@ -36,6 +36,7 @@
   <label>sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="10"></label>
   <hr>
   <label>d_peak <input id="d_peak" type="number" step="0.05" value="0.75"></label>
+  <label>cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="3.0"></label>
   <label>in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.7"></label>
   <label>ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.4"></label>
   <label>attraction <input id="attraction" type="number" step="0.1" value="-0.4"></label>
@@ -195,7 +196,7 @@ addEventListener('resize', () => {
 // ---------------------------------------------------------------------------
 const URL_KEYS = [
   'nBlocks', 'sphereR',
-  'd_peak', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction',
+  'd_peak', 'cutoff', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction',
   'dtMul', 'damping', 'wallK', 'forceCap',
 ];
 
@@ -244,6 +245,7 @@ bindNumber('sphereR', 'sphereR', () => { rebuildContainer(); rebuildBlocks(); })
 bindNumber('d_peak',  'd_peak', () => {
   for (const b of blocks) b.mesh.scale.setScalar(params.d_peak);
 });
+bindNumber('cutoff', 'cutoff');
 bindNumber('in_plane_repulsion',   'in_plane_repulsion');
 bindNumber('orthogonal_repulsion', 'orthogonal_repulsion');
 bindNumber('attraction',           'attraction');

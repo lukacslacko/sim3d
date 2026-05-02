@@ -18,6 +18,11 @@ export const DEFAULTS = {
   orthogonal_repulsion: -1.4,
   attraction:           -0.4,
   d_peak:                0.75,
+  // Interaction cutoff: the analytic energy is multiplied by a smooth mask
+  // m(d) that is 1 for d ≤ cutoff/2 and tapers to 0 at d = cutoff. Pairs
+  // beyond cutoff contribute nothing to force or torque, so the spatial-hash
+  // skip in stepBlocks is exact (no truncation error).
+  cutoff: 3.0,
 };
 
 export function makeBlock(pos, quat) {
@@ -87,7 +92,29 @@ const Z_HAT = [0, 0, 1];
 // get and which would destabilize the integrator).
 // ---------------------------------------------------------------------------
 
-export function pairAffinity(d, cA, cB, p) {
+// Smooth cutoff mask. m(d) = 1 for d ≤ R/2, smoothstep-tapered to 0 at d = R.
+//   t = (d − R/2) / (R/2)        ∈ [0, 1] in the taper region
+//   m = 1 − (3 t² − 2 t³)
+//   dm/dd = (−6 t + 6 t²) · (2 / R)
+// The taper is C¹ (continuous value and first derivative) at both endpoints,
+// so forces and torques don't kink at d = R/2 or d = R.
+function smoothMask(d, cutoff) {
+  const half = 0.5 * cutoff;
+  if (d <= half) return 1;
+  if (d >= cutoff) return 0;
+  const t = (d - half) / half;
+  return 1 - (3 - 2 * t) * t * t;
+}
+function smoothMaskDeriv(d, cutoff) {
+  const half = 0.5 * cutoff;
+  if (d <= half || d >= cutoff) return 0;
+  const t = (d - half) / half;
+  return (6 * t * t - 6 * t) / half;
+}
+
+// Unmasked pair energy U₀(d, cA, cB). The cutoff multiplies this in
+// pairAffinity / pairAffinityGrad; isolated for clarity and reuse.
+function pairAffinityRaw(d, cA, cB, p) {
   const T = 0.5 * (cA*cA + cB*cB);
   const S = 1 - T;
   const dpk = d - p.d_peak;
@@ -95,25 +122,35 @@ export function pairAffinity(d, cA, cB, p) {
   const pre = p.in_plane_repulsion + (p.orthogonal_repulsion - p.in_plane_repulsion) * T;
   return -pre / d + S * p.attraction * W;
 }
-
-// Returns [∂U/∂d, ∂U/∂cA, ∂U/∂cB].
-//
-//   ∂U/∂d  =  pre/d²  +  S · A · dW/dd            with dW/dd = −2(d−d_peak)·W²
-//   ∂U/∂T  =  −(P_ortho − P_in)/d  −  A · W       (since ∂S/∂T = −1)
-//   ∂T/∂cA =  cA           so  ∂U/∂cA = cA · ∂U/∂T   (and similarly for cB)
-export function pairAffinityGrad(d, cA, cB, p) {
+function pairAffinityRawGrad(d, cA, cB, p) {
   const T = 0.5 * (cA*cA + cB*cB);
   const S = 1 - T;
   const dpk = d - p.d_peak;
   const W = 1 / (1 + dpk * dpk);
   const dW_dd = -2 * dpk * W * W;
   const pre = p.in_plane_repulsion + (p.orthogonal_repulsion - p.in_plane_repulsion) * T;
+  const dU_dd  = pre / (d * d) + S * p.attraction * dW_dd;
+  const dU_dT  = -(p.orthogonal_repulsion - p.in_plane_repulsion) / d - p.attraction * W;
+  return [dU_dd, cA * dU_dT, cB * dU_dT];
+}
 
-  const dU_dd = pre / (d * d) + S * p.attraction * dW_dd;
-  const dU_dT = -(p.orthogonal_repulsion - p.in_plane_repulsion) / d - p.attraction * W;
-  const dU_dcA = cA * dU_dT;
-  const dU_dcB = cB * dU_dT;
-  return [dU_dd, dU_dcA, dU_dcB];
+export function pairAffinity(d, cA, cB, p) {
+  const m = smoothMask(d, p.cutoff);
+  if (m === 0) return 0;
+  return m * pairAffinityRaw(d, cA, cB, p);
+}
+
+// Returns [∂(m·U₀)/∂d, ∂(m·U₀)/∂cA, ∂(m·U₀)/∂cB].
+// m depends only on d, so cA/cB partials just pick up a factor of m.
+//   ∂U/∂d   = m · ∂U₀/∂d  +  U₀ · dm/dd
+export function pairAffinityGrad(d, cA, cB, p) {
+  const m = smoothMask(d, p.cutoff);
+  if (m === 0) return [0, 0, 0];
+  const [dU_dd0, dU_dcA0, dU_dcB0] = pairAffinityRawGrad(d, cA, cB, p);
+  const dm = smoothMaskDeriv(d, p.cutoff);
+  if (dm === 0) return [m * dU_dd0, m * dU_dcA0, m * dU_dcB0];
+  const U0 = pairAffinityRaw(d, cA, cB, p);
+  return [m * dU_dd0 + dm * U0, m * dU_dcA0, m * dU_dcB0];
 }
 
 // Accumulate pair force on a, b and torques (about each block's own normal).
@@ -122,7 +159,10 @@ export function applyPair(a, b, p) {
   _r[0] = b.pos[0] - a.pos[0];
   _r[1] = b.pos[1] - a.pos[1];
   _r[2] = b.pos[2] - a.pos[2];
-  let d = Math.hypot(_r[0], _r[1], _r[2]);
+  // Cheap reject before the sqrt: d² > cutoff² ⇒ mask is zero anyway.
+  const d2 = _r[0]*_r[0] + _r[1]*_r[1] + _r[2]*_r[2];
+  if (d2 > p.cutoff * p.cutoff) return;
+  let d = Math.sqrt(d2);
   if (d < 1e-4) {
     // Degenerate overlap — kick apart along a random axis to break symmetry.
     const k = 5;
@@ -183,6 +223,24 @@ export function applyWall(b, p) {
   b.force[2] += k * b.pos[2];
 }
 
+// Spatial hash over a uniform grid with cell size = cutoff. Two blocks can
+// only interact if their cells differ by ≤ 1 in each axis, so for each cell
+// we pair (a) every distinct in-cell pair and (b) every block with every
+// block in 13 "forward" neighbor cells (the lexicographically-positive half
+// of the 26 surrounding cells; the other half is covered when those cells
+// are processed as the home cell).
+const _FORWARD_OFFSETS = [
+  [-1,-1, 1], [0,-1, 1], [1,-1, 1],
+  [-1, 0, 1], [0, 0, 1], [1, 0, 1],
+  [-1, 1, 1], [0, 1, 1], [1, 1, 1],
+  [-1, 1, 0], [0, 1, 0], [1, 1, 0],
+  [ 1, 0, 0],
+];
+// Pack (cx,cy,cz) ∈ [-512, 511] into a 30-bit integer for fast Map keys.
+function _packCell(cx, cy, cz) {
+  return ((cx + 512) << 20) | ((cy + 512) << 10) | (cz + 512);
+}
+
 // Semi-implicit Euler step over an array of blocks.
 export function stepBlocks(blocks, dt, p) {
   for (const b of blocks) {
@@ -190,9 +248,57 @@ export function stepBlocks(blocks, dt, p) {
     b.torque[0] = b.torque[1] = b.torque[2] = 0;
     refreshNormal(b);
   }
+
+  // Bin blocks into cells of size = cutoff. Track both the cell index per
+  // block and the per-cell index list so we can iterate cells in any order.
+  const cellSize = p.cutoff;
+  const inv_cell = 1 / cellSize;
+  const grid = new Map();              // packed cell key  →  number[] of block indices
+  const cellsCx = [];                  // parallel arrays for cell decode without string parsing
+  const cellsCy = [];
+  const cellsCz = [];
+  const cellsKey = [];
   const N = blocks.length;
-  for (let i = 0; i < N; i++)
-    for (let j = i + 1; j < N; j++) applyPair(blocks[i], blocks[j], p);
+  for (let i = 0; i < N; i++) {
+    const pos = blocks[i].pos;
+    const cx = Math.floor(pos[0] * inv_cell);
+    const cy = Math.floor(pos[1] * inv_cell);
+    const cz = Math.floor(pos[2] * inv_cell);
+    const key = _packCell(cx, cy, cz);
+    let cell = grid.get(key);
+    if (cell === undefined) {
+      cell = [];
+      grid.set(key, cell);
+      cellsCx.push(cx); cellsCy.push(cy); cellsCz.push(cz); cellsKey.push(key);
+    }
+    cell.push(i);
+  }
+
+  const M = cellsKey.length;
+  for (let c = 0; c < M; c++) {
+    const cell = grid.get(cellsKey[c]);
+    const cx = cellsCx[c], cy = cellsCy[c], cz = cellsCz[c];
+    // (a) in-cell pairs
+    for (let ii = 0; ii < cell.length; ii++) {
+      const a = blocks[cell[ii]];
+      for (let jj = ii + 1; jj < cell.length; jj++) {
+        applyPair(a, blocks[cell[jj]], p);
+      }
+    }
+    // (b) cross-cell pairs to forward neighbors
+    for (let o = 0; o < _FORWARD_OFFSETS.length; o++) {
+      const off = _FORWARD_OFFSETS[o];
+      const ncell = grid.get(_packCell(cx + off[0], cy + off[1], cz + off[2]));
+      if (ncell === undefined) continue;
+      for (let ii = 0; ii < cell.length; ii++) {
+        const a = blocks[cell[ii]];
+        for (let jj = 0; jj < ncell.length; jj++) {
+          applyPair(a, blocks[ncell[jj]], p);
+        }
+      }
+    }
+  }
+
   for (const b of blocks) applyWall(b, p);
 
   const fc = p.forceCap, fc2 = fc * fc;

@@ -27,7 +27,9 @@ function check(d, cA, cB) {
   }
 }
 
-const ds  = [0.3, 0.7, 1.0, 1.4, 2.0, 4.0, 8.0];
+// Spread d across the three regimes of the smooth cutoff: full strength
+// (d ≤ cutoff/2), taper region (cutoff/2 < d < cutoff), past cutoff (d ≥ cutoff).
+const ds  = [0.3, 0.7, 1.0, 1.4, 1.55, 1.8, 2.0, 2.5, 2.9, 3.1, 4.0, 8.0];
 const cs  = [-0.95, -0.5, -0.1, 0.0, 0.1, 0.5, 0.95];
 for (const d of ds) for (const cA of cs) for (const cB of cs) check(d, cA, cB);
 
