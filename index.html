@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>sim3d — block affinity playground</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0d12; color: #cfd6e0;
+    font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+  #ui { position: fixed; top: 10px; left: 10px; padding: 10px 12px;
+    background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 6px;
+    backdrop-filter: blur(6px); min-width: 240px; }
+  #ui h1 { font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; color: #9ad8ff; }
+  #ui label { display: flex; justify-content: space-between; gap: 8px;
+    align-items: center; margin: 4px 0; }
+  #ui input[type=range] { width: 110px; }
+  #ui input[type=number] { width: 70px; background: #1a222d; color: #cfd6e0;
+    border: 1px solid #2a3543; border-radius: 3px; padding: 1px 4px; }
+  #ui button { background: #1f2a36; color: #cfd6e0; border: 1px solid #2a3543;
+    padding: 4px 9px; border-radius: 4px; cursor: pointer; margin-right: 4px; }
+  #ui button:hover { background: #283544; }
+  #ui .row { margin-top: 6px; }
+  #ui hr { border: none; border-top: 1px solid #25303d; margin: 7px 0; }
+  #stats { position: fixed; bottom: 10px; left: 10px; padding: 6px 9px;
+    background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 4px;
+    font-variant-numeric: tabular-nums; }
+  #help { position: fixed; bottom: 10px; right: 10px; padding: 6px 9px;
+    background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 4px;
+    color: #7a8696; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <h1>SIM3D — block affinity</h1>
+  <label>blocks <input id="nBlocks" type="number" min="1" max="2000" step="1" value="700"></label>
+  <label>sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="10"></label>
+  <hr>
+  <label>d_peak <input id="d_peak" type="number" step="0.05" value="0.75"></label>
+  <label>in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.7"></label>
+  <label>ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.4"></label>
+  <label>attraction <input id="attraction" type="number" step="0.1" value="-0.4"></label>
+  <hr>
+  <label>dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
+  <label>damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.92"></label>
+  <label>wall k <input id="wallK" type="number" step="0.1" value="1.0"></label>
+  <label>force cap <input id="fCap" type="number" step="1" value="50"></label>
+  <div class="row">
+    <button id="resetBtn">reset</button>
+    <button id="pauseBtn">pause</button>
+    <button id="kickBtn">jiggle</button>
+  </div>
+</div>
+
+<div id="stats"></div>
+<div id="help">drag = orbit · scroll = zoom · right-drag = pan</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import {
+  DEFAULTS, makeBlock, stepBlocks, randomQuat, randomPointInBall,
+} from './physics.mjs';
+
+// ---------------------------------------------------------------------------
+// Parameters: live state, mirrors the controls in #ui. Physics module reads
+// straight off this object every step, so editing a control updates behavior
+// instantly.
+// ---------------------------------------------------------------------------
+const params = {
+  ...DEFAULTS,
+  nBlocks: 700,
+  dtMul: 1,
+};
+
+let blocks = [];
+let scene, camera, renderer, controls, sphereMesh;
+let hexGeo, hexMat;
+let paused = false;
+
+function colorFor(i, n) {
+  const h = (i / Math.max(n, 1)) * 0.7 + 0.55;
+  return new THREE.Color().setHSL(h % 1, 0.55, 0.6);
+}
+
+function buildScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0d12);
+  scene.fog = new THREE.Fog(0x0a0d12, 25, 80);
+
+  camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 500);
+  camera.position.set(0, 6, 22);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+  const key = new THREE.DirectionalLight(0xffffff, 0.9);
+  key.position.set(5, 10, 7); scene.add(key);
+  const rim = new THREE.DirectionalLight(0x88aaff, 0.4);
+  rim.position.set(-6, -3, -8); scene.add(rim);
+
+  // Hex prism: thin cylinder, 6 sides, axis = local Z (rotated from default Y).
+  // Diameter = eqDist so visual size matches the equilibrium spacing.
+  hexGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.08, 6);
+  hexGeo.rotateX(Math.PI / 2);
+  hexMat = new THREE.MeshStandardMaterial({
+    color: 0x7fbcff, metalness: 0.1, roughness: 0.55,
+    side: THREE.DoubleSide,
+  });
+
+  rebuildContainer();
+  rebuildBlocks();
+}
+
+function rebuildContainer() {
+  if (sphereMesh) scene.remove(sphereMesh);
+  const g = new THREE.SphereGeometry(params.sphereR, 32, 16);
+  const m = new THREE.MeshBasicMaterial({ color: 0x2a3a4f, wireframe: true,
+    transparent: true, opacity: 0.4 });
+  sphereMesh = new THREE.Mesh(g, m);
+  scene.add(sphereMesh);
+}
+
+function rebuildBlocks() {
+  for (const b of blocks) scene.remove(b.mesh);
+  blocks = [];
+  const R = params.sphereR * 0.9;
+  for (let i = 0; i < params.nBlocks; i++) {
+    const b = makeBlock(randomPointInBall(R), randomQuat());
+    const mat = hexMat.clone();
+    mat.color.copy(colorFor(i, params.nBlocks));
+    const mesh = new THREE.Mesh(hexGeo, mat);
+    mesh.scale.setScalar(params.d_peak); // visual size tracks equilibrium spacing
+    mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
+    mesh.quaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
+    b.mesh = mesh;
+    scene.add(mesh);
+    blocks.push(b);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main loop & UI wiring.
+// ---------------------------------------------------------------------------
+const statsEl = document.getElementById('stats');
+let frame = 0, fpsTick = performance.now(), fps = 0;
+
+function syncMeshes() {
+  for (const b of blocks) {
+    b.mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
+    b.mesh.quaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (!paused) stepBlocks(blocks, 0.04 * params.dtMul, params);
+  syncMeshes();
+  controls.update();
+  renderer.render(scene, camera);
+
+  frame++;
+  const now = performance.now();
+  if (now - fpsTick > 500) {
+    fps = (frame * 1000 / (now - fpsTick)) | 0;
+    frame = 0; fpsTick = now;
+    statsEl.textContent = `${blocks.length} blocks · ${fps} fps · ${(blocks.length*(blocks.length-1)/2)|0} pairs/step`;
+  }
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------------------------------------------------------------------------
+// URL persistence: every tunable parameter is mirrored into the query string
+// (history.replaceState — no entries piling up in back-stack), and parsed back
+// on load. This makes the page state shareable as a URL.
+// ---------------------------------------------------------------------------
+const URL_KEYS = [
+  'nBlocks', 'sphereR',
+  'd_peak', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction',
+  'dtMul', 'damping', 'wallK', 'forceCap',
+];
+
+function applyURLToParams() {
+  const sp = new URLSearchParams(location.search);
+  for (const k of URL_KEYS) {
+    if (sp.has(k)) {
+      const v = parseFloat(sp.get(k));
+      if (Number.isFinite(v)) params[k] = v;
+    }
+  }
+}
+function writeParamsToURL() {
+  const sp = new URLSearchParams();
+  for (const k of URL_KEYS) sp.set(k, String(params[k]));
+  history.replaceState(null, '', '?' + sp.toString());
+}
+
+function bindNumber(id, key, after) {
+  const el = document.getElementById(id);
+  el.value = params[key];
+  // input fires on every keystroke / spinner click — keep params + URL in
+  // sync immediately so the URL is always copy-pasteable.
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value);
+    if (Number.isFinite(v)) params[key] = v;
+    writeParamsToURL();
+  });
+  // change fires on blur / Enter — run heavy after-callbacks (rebuilds) here
+  // so they don't fire on every digit typed.
+  if (after) el.addEventListener('change', after);
+}
+function bindRange(id, key) {
+  const el = document.getElementById(id);
+  el.value = params[key];
+  el.addEventListener('input', () => {
+    params[key] = parseFloat(el.value);
+    writeParamsToURL();   // history.replaceState is cheap; safe to call per drag tick
+  });
+}
+
+applyURLToParams();
+buildScene();
+bindNumber('nBlocks', 'nBlocks', rebuildBlocks);
+bindNumber('sphereR', 'sphereR', () => { rebuildContainer(); rebuildBlocks(); });
+bindNumber('d_peak',  'd_peak', () => {
+  for (const b of blocks) b.mesh.scale.setScalar(params.d_peak);
+});
+bindNumber('in_plane_repulsion',   'in_plane_repulsion');
+bindNumber('orthogonal_repulsion', 'orthogonal_repulsion');
+bindNumber('attraction',           'attraction');
+bindNumber('wallK', 'wallK');
+bindNumber('fCap',  'forceCap');
+bindRange('dtMul',  'dtMul');
+bindRange('damping','damping');
+
+writeParamsToURL();  // canonicalize the URL on first load
+
+document.getElementById('resetBtn').onclick = rebuildBlocks;
+document.getElementById('pauseBtn').onclick = (e) => {
+  paused = !paused;
+  e.target.textContent = paused ? 'play' : 'pause';
+};
+document.getElementById('kickBtn').onclick = () => {
+  for (const b of blocks) {
+    b.vel[0] += (Math.random()-0.5)*4;
+    b.vel[1] += (Math.random()-0.5)*4;
+    b.vel[2] += (Math.random()-0.5)*4;
+    b.ang[0] += (Math.random()-0.5)*2;
+    b.ang[1] += (Math.random()-0.5)*2;
+    b.ang[2] += (Math.random()-0.5)*2;
+  }
+};
+
+animate();
+</script>
+</body>
+</html>
