@@ -38,9 +38,9 @@
     <option value="sheet">sheet</option>
   </select></label>
   <hr>
-  <label title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="5000"></label>
+  <label title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="1000"></label>
   <label title="Radius of the spherical container. Blocks are pushed inward from the wall.">sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
-  <label title="Pair-interaction cutoff distance. Pairs farther apart than this contribute zero force/torque (with a smooth taper between cutoff/2 and cutoff). Bonded H-T pairs ignore this — bonds always pull.">cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="2.0"></label>
+  <label title="Pair-interaction cutoff distance. Pairs farther apart than this contribute zero force/torque (with a smooth taper between cutoff/2 and cutoff). Bonded H-T pairs ignore this — bonds always pull.">cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="3.0"></label>
   <hr>
   <div class="cfg-sheet">
     <label title="Equilibrium spacing for in-plane neighbors — the well's center along the displacement axis.">d_peak <input id="d_peak" type="number" step="0.05" value="0.4"></label>
@@ -52,22 +52,22 @@
   </div>
   <div class="cfg-head_tail">
     <label title="Preferred separation between a head and the tail it's bonded to. The 'a' parameter in U = −rep/d + att/(1+(d−a)²) for the bond.">bond distance <input id="bond_distance" type="number" step="0.05" value="0.6"></label>
-    <label title="Short-range repulsion strength for the bonded pair (the −rep/d term). NEGATIVE → −rep/d × negative = +positive/d, an actual repulsive core that prevents overlap.">bond repulsion <input id="bond_repulsion" type="number" step="0.1" value="-0.5"></label>
-    <label title="Attractive well depth at the bond distance. NEGATIVE → energy minimum near d = bond distance (more negative = deeper well).">bond attraction <input id="bond_attraction" type="number" step="0.1" value="-2.0"></label>
-    <label title="Preferred distance between two heads (always unbonded — bonds only exist H↔T).">H–H distance <input id="head_head_distance" type="number" step="0.05" value="1.0"></label>
-    <label title="Short-range repulsion between two heads. NEGATIVE for actual repulsion.">H–H repulsion <input id="head_head_repulsion" type="number" step="0.1" value="-0.5"></label>
-    <label title="Attraction between two heads. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel (bare repulsion wins).">H–H attraction <input id="head_head_attraction" type="number" step="0.1" value="-1.0"></label>
-    <label title="Preferred distance between two tails (always unbonded — bonds only exist H↔T).">T–T distance <input id="tail_tail_distance" type="number" step="0.05" value="1.0"></label>
-    <label title="Short-range repulsion between two tails. NEGATIVE for actual repulsion.">T–T repulsion <input id="tail_tail_repulsion" type="number" step="0.1" value="-0.5"></label>
-    <label title="Attraction between two tails. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel tails fully attract, antiparallel ones repel.">T–T attraction <input id="tail_tail_attraction" type="number" step="0.1" value="-1.0"></label>
-    <label title="Strength of the pure −k/d attraction between a head and a tail that are NOT bonded to each other. No equilibrium distance — they just pull each other in until H–H or T–T repulsion stops them. This is the parameter formerly known (badly) as 'unbond k'. Set to 0 to ignore non-bond H–T attraction entirely.">unbonded H–T attraction <input id="unbonded_ht_attraction" type="number" step="0.1" value="0.5"></label>
-    <label title="Torque strength on each bonded H/T to align its direction with the bond axis (the line from tail to head). Higher = faster alignment. Parallel is the only stable equilibrium.">bond alignment torque <input id="bond_alignment_torque" type="number" step="0.1" value="1.0"></label>
-    <label title="Torque strength on unbonded same-type pairs (H↔H and T↔T) to make their directions parallel. Pure cross-product torque, so parallel is the only stable equilibrium. 0 = off.">pair alignment torque <input id="pair_alignment_torque" type="number" step="0.05" value="0.3"></label>
+    <label title="Short-range repulsion strength for the bonded pair (the −rep/d term). NEGATIVE → −rep/d × negative = +positive/d, an actual repulsive core that prevents overlap.">bond repulsion <input id="bond_repulsion" type="number" step="0.1" value="0"></label>
+    <label title="Attractive well depth at the bond distance. NEGATIVE → energy minimum near d = bond distance (more negative = deeper well).">bond attraction <input id="bond_attraction" type="number" step="0.1" value="-2.7"></label>
+    <label title="Preferred distance between two heads (always unbonded — bonds only exist H↔T).">H–H distance <input id="head_head_distance" type="number" step="0.05" value="0.6"></label>
+    <label title="Short-range repulsion between two heads. NEGATIVE for actual repulsion.">H–H repulsion <input id="head_head_repulsion" type="number" step="0.1" value="-0.3"></label>
+    <label title="Attraction between two heads. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel (bare repulsion wins).">H–H attraction <input id="head_head_attraction" type="number" step="0.1" value="-0.6"></label>
+    <label title="Preferred distance between two tails (always unbonded — bonds only exist H↔T).">T–T distance <input id="tail_tail_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="Short-range repulsion between two tails. NEGATIVE for actual repulsion.">T–T repulsion <input id="tail_tail_repulsion" type="number" step="0.1" value="-0.2"></label>
+    <label title="Attraction between two tails. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel tails fully attract, antiparallel ones repel.">T–T attraction <input id="tail_tail_attraction" type="number" step="0.1" value="-0.6"></label>
+    <label title="Strength of the pure −k/d attraction between a head and a tail that are NOT bonded to each other. No equilibrium distance — they just pull each other in until H–H or T–T repulsion stops them. This is the parameter formerly known (badly) as 'unbond k'. Set to 0 to ignore non-bond H–T attraction entirely.">unbonded H–T attraction <input id="unbonded_ht_attraction" type="number" step="0.1" value="0"></label>
+    <label title="Torque strength on each bonded H/T to align its direction with the bond axis (the line from tail to head). Higher = faster alignment. Parallel is the only stable equilibrium.">bond alignment torque <input id="bond_alignment_torque" type="number" step="0.1" value="2"></label>
+    <label title="Torque strength on unbonded same-type pairs (H↔H and T↔T) to make their directions parallel. Pure cross-product torque, so parallel is the only stable equilibrium. 0 = off.">pair alignment torque <input id="pair_alignment_torque" type="number" step="0.05" value="0"></label>
     <hr>
   </div>
   <label title="Time-step multiplier. The base step is 0.04; this scales it. Higher = faster simulation but less stable.">dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
-  <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.994"></label>
-  <label title="Strength of the inward push from the sphere wall. Higher = blocks held closer to the center.">wall k <input id="wallK" type="number" step="0.1" value="1.0"></label>
+  <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.946"></label>
+  <label title="Strength of the inward push from the sphere wall. Higher = blocks held closer to the center.">wall k <input id="wallK" type="number" step="0.1" value="0.1"></label>
   <label title="Hard upper bound on per-block force/torque magnitudes (each step). Stops singularities (pairs at ~zero distance) from blowing up the integrator.">force cap <input id="fCap" type="number" step="1" value="50"></label>
   <div class="row">
     <button id="resetBtn">reset</button>
@@ -98,7 +98,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   DEFAULTS, makeBlock, stepBlocks, refreshNormal, setupHeadTail,
   randomQuat, randomPointInBall,
-} from './physics.mjs?v=3';
+} from './physics.mjs?v=4';
 
 // ---------------------------------------------------------------------------
 // Parameters: live state, mirrors the controls in #ui. Physics module reads
@@ -107,7 +107,7 @@ import {
 // ---------------------------------------------------------------------------
 const params = {
   ...DEFAULTS,
-  nBlocks: 5000,
+  nBlocks: 1000,
   dtMul: 1,
 };
 

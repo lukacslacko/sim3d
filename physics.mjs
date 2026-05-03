@@ -13,8 +13,8 @@ export const DEFAULTS = {
 
   // ── shared parameters (apply to every config) ─────────────────────────
   sphereR: 9,
-  damping: 0.994,
-  wallK: 1.0,
+  damping: 0.946,
+  wallK: 0.1,
   forceCap: 50,
   // Interaction cutoff: pair energies are multiplied by a smooth mask m(d)
   // that is 1 for d ≤ cutoff/2 and tapers to 0 at d = cutoff. The spatial
@@ -22,7 +22,7 @@ export const DEFAULTS = {
   // exact, since pairs past cutoff contribute zero. Bonded pairs in the
   // head_tail config are exempt: they're force-applied unconditionally so
   // the bond never gets "lost" by separation.
-  cutoff: 2.0,
+  cutoff: 3.0,
 
   // ── 'sheet' config parameters ─────────────────────────────────────────
   // Sign convention: -1/d times a NEGATIVE param yields a true positive
@@ -44,29 +44,29 @@ export const DEFAULTS = {
   // Bonded H–T pair: no (1+cos θ)/2 factor (orientation is set by the
   // bond_alignment_torque below).
   bond_distance:                     0.6,
-  bond_repulsion:                   -0.5,
-  bond_attraction:                  -2.0,
+  bond_repulsion:                    0.0,
+  bond_attraction:                  -2.7,
   // Head–head pair (always unbonded). Attraction multiplied by
   // (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel.
-  head_head_distance:                1.0,
-  head_head_repulsion:              -0.5,
-  head_head_attraction:             -1.0,
+  head_head_distance:                0.6,
+  head_head_repulsion:              -0.3,
+  head_head_attraction:             -0.6,
   // Tail–tail pair (always unbonded). Same (1+cos θ)/2 factor as H–H.
-  tail_tail_distance:                1.0,
-  tail_tail_repulsion:              -0.5,
-  tail_tail_attraction:             -1.0,
+  tail_tail_distance:                0.5,
+  tail_tail_repulsion:              -0.2,
+  tail_tail_attraction:             -0.6,
   // Unbonded H–T pair (a head and a tail that aren't bonded to each other).
   // Pure −k/d affinity, no equilibrium — they just pull each other in until
   // something else (H–H or T–T repulsion) stops them.
-  unbonded_ht_attraction:            0.5,
+  unbonded_ht_attraction:            0.0,
   // Each bonded block feels a torque τ = strength · (n × bond_dir) pulling
   // its direction parallel to the bond axis (tail → head). Antiparallel is
   // the unstable equilibrium; parallel is the stable one.
-  bond_alignment_torque:             1.0,
+  bond_alignment_torque:             2.0,
   // Same-type unbonded pairs (H–H and T–T) feel τ = strength · m(d) · (n_a × n_b)
   // on each, pulling their directions parallel. Pure cross-product (no
   // n·n factor) → parallel is the only stable equilibrium. 0 = off.
-  pair_alignment_torque:             0.3,
+  pair_alignment_torque:             0.0,
 };
 
 export function makeBlock(pos, quat, opts = {}) {
