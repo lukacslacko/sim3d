@@ -57,6 +57,12 @@ export const DEFAULTS = {
   // pulling its direction toward the line of centers (parallel = stable
   // equilibrium; antiparallel = unstable).
   align_k:   1.0,
+  // Unconnected same-type pair alignment torque (head↔head and tail↔tail).
+  //   τ_a = align_unconn_k · m(d) · (n_a × n_b),    τ_b = −τ_a
+  // Pure cross-product (no n·n factor) gives parallel as the only stable
+  // equilibrium — antiparallel is unstable. Falls off with distance via
+  // the same cutoff mask as the forces. 0 = off.
+  align_unconn_k: 0.3,
 };
 
 export function makeBlock(pos, quat, opts = {}) {
@@ -303,15 +309,6 @@ function applyPairSheet(a, b, p) {
 // head_tail config — pair forces and bond force/torque.
 // ---------------------------------------------------------------------------
 
-// "Want distance a" pair energy:  U₀(d) = -rep/d + att / (1 + (d-a)²).
-// Returns the radial-mask-corrected dU/dd given the unmasked U₀ and dU₀/dd.
-function _maskedDeriv(d, U0, dU0_dd, p) {
-  const m  = smoothMask(d, p.cutoff);
-  if (m === 0) return [0, 0];
-  const dm = smoothMaskDeriv(d, p.cutoff);
-  return [m * dU0_dd + dm * U0, m];
-}
-
 // Bonded H–T pair: applied unconditionally (no cutoff) so the bond is never
 // "lost" by separation. Pure radial force from -bond_rep/d + bond_att·W,
 // plus an alignment torque pulling each block's direction toward bond_dir =
@@ -366,7 +363,9 @@ function applyBondPair(head, tail, p) {
 //   • H–H, T–T (same type): "want distance hh_d / tt_d", with the attraction
 //     term multiplied by (1 + n_a · n_b) / 2 — parallel = full attraction,
 //     antiparallel = no attraction (bare 1/d repulsion wins → blocks repel).
-//   • H–T not bonded: pure -unbond_k/d affinity (no equilibrium, no cos).
+//     Also gets a parallelizing torque (align_unconn_k) on each block.
+//   • H–T not bonded: pure -unbond_k/d affinity (no equilibrium, no cos,
+//     no torque).
 // Bonded H–T pairs reach this function via the spatial hash too — we early-
 // reject them so their force is only applied via applyBondPair (no double-
 // counting).
@@ -387,9 +386,13 @@ function applyPairHeadTail(a, b, p) {
   }
   const d = Math.sqrt(d2);
   const inv_d = 1 / d;
+  const m  = smoothMask(d, p.cutoff);
+  if (m === 0) return 1;
+  const dm = smoothMaskDeriv(d, p.cutoff);
+  const sameType = a.type === b.type;
 
   let U0, dU0_dd;
-  if (a.type !== b.type) {
+  if (!sameType) {
     // Unbonded H–T: U = -unbond_k / d.
     U0 = -p.unbond_k * inv_d;
     dU0_dd = p.unbond_k * inv_d * inv_d;   // d/dd[-k/d] = +k/d²
@@ -406,14 +409,27 @@ function applyPairHeadTail(a, b, p) {
     dU0_dd =  want_rep * inv_d * inv_d - 2 * da * cf * want_att * W * W;
   }
 
-  const [dU_dd, m] = _maskedDeriv(d, U0, dU0_dd, p);
-  if (m === 0) return 1;
+  const dU_dd = m * dU0_dd + dm * U0;
   const fmag = -dU_dd;
   const fx = fmag * rx * inv_d;
   const fy = fmag * ry * inv_d;
   const fz = fmag * rz * inv_d;
   a.force[0] -= fx; a.force[1] -= fy; a.force[2] -= fz;
   b.force[0] += fx; b.force[1] += fy; b.force[2] += fz;
+
+  // Parallelizing torque on same-type unconnected pairs (HH and TT).
+  // Pure cross product (no n_a·n_b factor) makes parallel the only stable
+  // equilibrium — antiparallel is unstable to any perturbation.
+  if (sameType && p.align_unconn_k !== 0) {
+    const k = p.align_unconn_k * m;
+    const nA = a.normal, nB = b.normal;
+    const cx = nA[1]*nB[2] - nA[2]*nB[1];
+    const cy = nA[2]*nB[0] - nA[0]*nB[2];
+    const cz = nA[0]*nB[1] - nA[1]*nB[0];
+    a.torque[0] += k * cx; a.torque[1] += k * cy; a.torque[2] += k * cz;
+    b.torque[0] -= k * cx; b.torque[1] -= k * cy; b.torque[2] -= k * cz;
+  }
+
   return 1;
 }
 
