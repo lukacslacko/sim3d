@@ -22,7 +22,7 @@ export const DEFAULTS = {
   //                       factor (water doesn't care about orientation; it
   //                       also receives no torque). Counts are split between
   //                       nMolecules (head+tail pairs) and nWaters.
-  config: 'head_body_tail',
+  config: 'head_tail_water',
 
   // ── shared parameters (apply to every config) ─────────────────────────
   sphereR: 9,
@@ -58,7 +58,7 @@ export const DEFAULTS = {
   // bond_alignment_torque below).
   bond_distance:                     0.4,
   bond_repulsion:                    0.0,
-  bond_attraction:                 -20.0,
+  bond_attraction:                -200.0,
   // Head–head pair (always unbonded). Attraction multiplied by
   // (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel.
   head_head_distance:                0.9,
@@ -106,8 +106,8 @@ export const DEFAULTS = {
   // with no (1+cos θ)/2 factor — alignment_exponent is irrelevant here.
   // Defaults set up a classic surfactant scenario: cohesive water, water
   // mildly attracts heads (hydrophilic), water repels tails (hydrophobic).
-  htw_ww_distance: 0.5, htw_ww_repulsion:  0.0, htw_ww_attraction: -0.5,
-  htw_wh_distance: 0.5, htw_wh_repulsion:  0.0, htw_wh_attraction: -0.3,
+  htw_ww_distance: 0.5, htw_ww_repulsion: -0.1, htw_ww_attraction:  0.0,
+  htw_wh_distance: 0.3, htw_wh_repulsion:  0.0, htw_wh_attraction: -0.8,
   htw_wt_distance: 0.5, htw_wt_repulsion: -0.5, htw_wt_attraction:  0.0,
 };
 

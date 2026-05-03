@@ -34,14 +34,14 @@
 <div id="ui">
   <h1>SIM3D — block affinity</h1>
   <label title="Which block-type configuration is active. Switching rebuilds blocks.&#10;&#10;sheet: single block type with orientation-rich affinity.&#10;head_tail: 2-block chains (head ↔ tail). Pair params: head_head_*, tail_tail_*, unbonded_ht_attraction.&#10;head_body_tail: 3-block chains (head ↔ body ↔ tail). 6 unbonded pair types — hbt_{hh,bb,tt,hb,ht,bt}_* — each with its own distance/repulsion/attraction.&#10;head_tail_water: head_tail + a third bondless, orientation-blind 'water' type. Three water pair models (W↔W, W↔H, W↔T). Two count sliders: nMolecules (head+tail pairs) and nWaters.">config <select id="config">
+    <option value="head_tail_water">head_tail_water</option>
     <option value="head_body_tail">head_body_tail</option>
     <option value="head_tail">head_tail</option>
-    <option value="head_tail_water">head_tail_water</option>
     <option value="sheet">sheet</option>
   </select></label>
   <hr>
   <label class="blocks-single" title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="1000"></label>
-  <label class="blocks-htw" title="Number of head-tail molecules in head_tail_water (each molecule = 1 head + 1 tail = 2 blocks). Total block count = 2·molecules + waters.">molecules <input id="nMolecules" type="number" min="0" max="5000" step="1" value="250"></label>
+  <label class="blocks-htw" title="Number of head-tail molecules in head_tail_water (each molecule = 1 head + 1 tail = 2 blocks). Total block count = 2·molecules + waters.">molecules <input id="nMolecules" type="number" min="0" max="5000" step="1" value="800"></label>
   <label class="blocks-htw" title="Number of bondless water blocks in head_tail_water. Waters are orientation-blind and only feel the htw_w*_* pair forces.">waters <input id="nWaters" type="number" min="0" max="10000" step="1" value="500"></label>
   <label title="Radius of the spherical container. Blocks are pushed inward from the wall.">sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
   <label title="Pair-interaction cutoff distance. Pairs farther apart than this contribute zero force/torque (with a smooth taper between cutoff/2 and cutoff). Bonded H-T pairs ignore this — bonds always pull.">cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="3.0"></label>
@@ -57,7 +57,7 @@
   <div class="cfg-bonded">
     <label title="Preferred separation between two bonded blocks (H↔T in head_tail; H↔B and B↔T in head_body_tail). The 'a' parameter in U = −rep/d + att/(1+(d−a)²) for each bond.">bond distance <input id="bond_distance" type="number" step="0.05" value="0.4"></label>
     <label title="Short-range repulsion strength for bonded pairs (the −rep/d term). NEGATIVE → −rep/d × negative = +positive/d, an actual repulsive core that prevents overlap.">bond repulsion <input id="bond_repulsion" type="number" step="0.1" value="0"></label>
-    <label title="Attractive well depth at the bond distance. NEGATIVE → energy minimum near d = bond distance (more negative = deeper well).">bond attraction <input id="bond_attraction" type="number" step="0.1" value="-20"></label>
+    <label title="Attractive well depth at the bond distance. NEGATIVE → energy minimum near d = bond distance (more negative = deeper well).">bond attraction <input id="bond_attraction" type="number" step="0.1" value="-200"></label>
     <label title="Torque on each bonded block to align its normal with bond_dir (= inner→outer = tail→head direction). Higher = faster alignment. In head_body_tail, both bonds align all three blocks the same way (tail→head).">bond alignment torque <input id="bond_alignment_torque" type="number" step="0.1" value="20"></label>
     <label title="Exponent k on the alignment factor used by every (1+cos θ)/2 attraction in this config: cf = ((1 + n_a·n_b)/2)^k. Applies to head_tail's HH and TT, and to ALL 6 head_body_tail pair types (HH, BB, TT, HB, HT, BT). k=1 is the historical linear factor. k>1 sharpens — only nearly-parallel pairs feel the attractive well, off-axis ones get only the bare repulsion. k<1 makes attraction more permissive. Antiparallel always gives cf=0.">alignment exponent <input id="alignment_exponent" type="number" min="0" step="0.1" value="5"></label>
   </div>
@@ -94,11 +94,11 @@
   </div>
   <div class="cfg-htw">
     <label title="water↔water preferred distance. Form U = −rep/d + att/(1+(d−distance)²). NO (1+cos θ)/2 factor — water doesn't care about orientation, and water blocks receive no torque from any pair.">W–W distance <input id="htw_ww_distance" type="number" step="0.05" value="0.5"></label>
-    <label title="water↔water short-range repulsion. NEGATIVE for actual core repulsion (waters can't overlap).">W–W repulsion <input id="htw_ww_repulsion" type="number" step="0.05" value="0"></label>
-    <label title="water↔water attractive well. NEGATIVE for attraction (water self-cohesion — bulk water phase). The well minimum sits at W–W distance only when W–W repulsion = 0; nonzero repulsion shifts it outward.">W–W attraction <input id="htw_ww_attraction" type="number" step="0.05" value="-0.5"></label>
-    <label title="water↔head preferred distance.">W–H distance <input id="htw_wh_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="water↔water short-range repulsion. NEGATIVE for actual core repulsion (waters can't overlap).">W–W repulsion <input id="htw_ww_repulsion" type="number" step="0.05" value="-0.1"></label>
+    <label title="water↔water attractive well. NEGATIVE for attraction (water self-cohesion — bulk water phase). The well minimum sits at W–W distance only when W–W repulsion = 0; nonzero repulsion shifts it outward.">W–W attraction <input id="htw_ww_attraction" type="number" step="0.05" value="0"></label>
+    <label title="water↔head preferred distance.">W–H distance <input id="htw_wh_distance" type="number" step="0.05" value="0.3"></label>
     <label title="water↔head short-range repulsion. NEGATIVE for core repulsion.">W–H repulsion <input id="htw_wh_repulsion" type="number" step="0.05" value="0"></label>
-    <label title="water↔head attractive well depth. NEGATIVE for attraction (hydrophilic head). Set to 0 for indifferent.">W–H attraction <input id="htw_wh_attraction" type="number" step="0.05" value="-0.3"></label>
+    <label title="water↔head attractive well depth. NEGATIVE for attraction (hydrophilic head). Set to 0 for indifferent.">W–H attraction <input id="htw_wh_attraction" type="number" step="0.05" value="-0.8"></label>
     <label title="water↔tail preferred distance.">W–T distance <input id="htw_wt_distance" type="number" step="0.05" value="0.5"></label>
     <label title="water↔tail short-range repulsion. NEGATIVE for core repulsion (hydrophobic — water pushes tail away). With attraction=0 and a strong negative repulsion you get classic surfactant behavior: tails flee water, heads love it → micelles/bilayers.">W–T repulsion <input id="htw_wt_repulsion" type="number" step="0.05" value="-0.5"></label>
     <label title="water↔tail attractive well depth. NEGATIVE for attraction. Usually 0 for hydrophobic tails.">W–T attraction <input id="htw_wt_attraction" type="number" step="0.05" value="0"></label>
@@ -138,7 +138,7 @@ import {
   DEFAULTS, makeBlock, stepBlocks, refreshNormal,
   setupHeadTail, setupHeadBodyTail, setupHeadTailWater,
   randomQuat, randomPointInBall,
-} from './physics.mjs?v=12';
+} from './physics.mjs?v=13';
 
 // ---------------------------------------------------------------------------
 // Parameters: live state, mirrors the controls in #ui. Physics module reads
@@ -148,14 +148,14 @@ import {
 const params = {
   ...DEFAULTS,
   nBlocks: 1000,
-  nMolecules: 250,
+  nMolecules: 800,
   nWaters: 500,
   dtMul: 1,
 };
 
 let blocks = [];
 let scene, camera, renderer, controls, sphereMesh;
-let hexGeo, hexMat, headGeo, tailGeo, waterGeo;
+let hexGeo, hexMat, headGeo, tailGeo, waterGeo, waterMat;
 let paused = false;
 
 // Map a block's normal vector to RGB using |n| = (|x|, |y|, |z|). The hex
@@ -206,6 +206,14 @@ function buildScene() {
     color: 0x7fbcff, metalness: 0.1, roughness: 0.55,
     side: THREE.DoubleSide,
   });
+  // Water material: shared across every water block (no per-block color
+  // update). Half-translucent white so heads/tails are visible through the
+  // water shell. depthWrite=false so overlapping water spheres don't stack
+  // up depth-buffer artifacts on each other.
+  waterMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, metalness: 0.0, roughness: 0.6,
+    transparent: true, opacity: 0.5, depthWrite: false,
+  });
 
   rebuildContainer();
   rebuildBlocks();
@@ -238,28 +246,27 @@ function rebuildBlocks() {
   for (const b of blocks) {
     refreshNormal(b);
     let mesh;
-    const mat = hexMat.clone();
-    applyColorFromNormal(mat, b.normal);
     if (params.config === 'head_tail') {
-      // head = flat cuboid, tail = long cuboid; both scaled by bond_distance.
+      const mat = hexMat.clone(); applyColorFromNormal(mat, b.normal);
       mesh = new THREE.Mesh(b.type === 0 ? headGeo : tailGeo, mat);
       mesh.scale.setScalar(params.bond_distance ?? 0.6);
     } else if (params.config === 'head_body_tail') {
-      // head (type 0) and tail (type 2) are flat plates; body (type 1) is
-      // the long cuboid. All scaled by bond_distance for visual consistency.
+      const mat = hexMat.clone(); applyColorFromNormal(mat, b.normal);
       mesh = new THREE.Mesh(b.type === 1 ? tailGeo : headGeo, mat);
       mesh.scale.setScalar(params.bond_distance ?? 0.4);
     } else if (params.config === 'head_tail_water') {
-      // head/tail look like head_tail; water is a small sphere scaled by W–W
-      // distance (rough visual stand-in for the water "particle size").
       if (b.type === 2) {
-        mesh = new THREE.Mesh(waterGeo, mat);
+        // Water uses the SHARED waterMat (no clone, no per-block color).
+        // syncMeshes skips its color update too.
+        mesh = new THREE.Mesh(waterGeo, waterMat);
         mesh.scale.setScalar((params.htw_ww_distance ?? 0.5) * 0.5);
       } else {
+        const mat = hexMat.clone(); applyColorFromNormal(mat, b.normal);
         mesh = new THREE.Mesh(b.type === 0 ? headGeo : tailGeo, mat);
         mesh.scale.setScalar(params.bond_distance ?? 0.4);
       }
     } else {
+      const mat = hexMat.clone(); applyColorFromNormal(mat, b.normal);
       mesh = new THREE.Mesh(hexGeo, mat);
       mesh.scale.setScalar(params.d_peak ?? 0.4);
     }
@@ -308,9 +315,10 @@ function syncMeshes() {
   for (const b of blocks) {
     b.mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
     b.mesh.quaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
-    // |normal|→RGB color update for every block in every config — sheet,
-    // head, and tail all reflect their current pose direction this way.
-    applyColorFromNormal(b.mesh.material, b.normal);
+    // |normal|→RGB color update for every block whose material reflects its
+    // pose direction. Water uses the shared waterMat (translucent white) and
+    // we skip it so it stays white instead of getting overwritten per-frame.
+    if (b.mesh.material !== waterMat) applyColorFromNormal(b.mesh.material, b.normal);
   }
 }
 
