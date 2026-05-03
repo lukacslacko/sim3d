@@ -35,34 +35,38 @@ export const DEFAULTS = {
   bend:                  0.7,
 
   // ── 'head_tail' config parameters ─────────────────────────────────────
-  // Same sign convention as sheet: negative `*_rep` and `*_att` give
+  // Sign convention for *_repulsion / *_attraction: negative numbers give
   // physical repulsion + attractive well in the "want distance a" form
-  // U = −rep/d + att / (1 + (d − a)²).
-  // Bonded H–T pair (no cos factor; orientation is set by the bond torque).
-  bond_d:    0.6,
-  bond_rep: -0.5,
-  bond_att: -2.0,
-  // Head–head pair (with (1+cos θ)/2 factor on attraction).
-  hh_d:      1.0,
-  hh_rep:   -0.5,
-  hh_att:   -1.0,
-  // Tail–tail pair (with (1+cos θ)/2 factor on attraction).
-  tt_d:      1.0,
-  tt_rep:   -0.5,
-  tt_att:   -1.0,
-  // Unbonded head–tail: pure -unbond_k/d affinity (no equilibrium).
-  unbond_k:  0.5,
-  // Bond alignment torque strength. Each bonded block feels a torque
-  //   τ = align_k · (n × bond_dir),    bond_dir = (head.pos − tail.pos) / d
-  // pulling its direction toward the line of centers (parallel = stable
-  // equilibrium; antiparallel = unstable).
-  align_k:   1.0,
-  // Unconnected same-type pair alignment torque (head↔head and tail↔tail).
-  //   τ_a = align_unconn_k · m(d) · (n_a × n_b),    τ_b = −τ_a
-  // Pure cross-product (no n·n factor) gives parallel as the only stable
-  // equilibrium — antiparallel is unstable. Falls off with distance via
-  // the same cutoff mask as the forces. 0 = off.
-  align_unconn_k: 0.3,
+  //   U = −repulsion/d + attraction / (1 + (d − a)²).
+  // (−rep/d × negative = +positive/d → real repulsion at small d.
+  //  attraction × negative = energy minimum at d = a.)
+
+  // Bonded H–T pair: no (1+cos θ)/2 factor (orientation is set by the
+  // bond_alignment_torque below).
+  bond_distance:                     0.6,
+  bond_repulsion:                   -0.5,
+  bond_attraction:                  -2.0,
+  // Head–head pair (always unbonded). Attraction multiplied by
+  // (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel.
+  head_head_distance:                1.0,
+  head_head_repulsion:              -0.5,
+  head_head_attraction:             -1.0,
+  // Tail–tail pair (always unbonded). Same (1+cos θ)/2 factor as H–H.
+  tail_tail_distance:                1.0,
+  tail_tail_repulsion:              -0.5,
+  tail_tail_attraction:             -1.0,
+  // Unbonded H–T pair (a head and a tail that aren't bonded to each other).
+  // Pure −k/d affinity, no equilibrium — they just pull each other in until
+  // something else (H–H or T–T repulsion) stops them.
+  unbonded_ht_attraction:            0.5,
+  // Each bonded block feels a torque τ = strength · (n × bond_dir) pulling
+  // its direction parallel to the bond axis (tail → head). Antiparallel is
+  // the unstable equilibrium; parallel is the stable one.
+  bond_alignment_torque:             1.0,
+  // Same-type unbonded pairs (H–H and T–T) feel τ = strength · m(d) · (n_a × n_b)
+  // on each, pulling their directions parallel. Pure cross-product (no
+  // n·n factor) → parallel is the only stable equilibrium. 0 = off.
+  pair_alignment_torque:             0.3,
 };
 
 export function makeBlock(pos, quat, opts = {}) {
@@ -91,7 +95,7 @@ export function setupHeadTail(blocks, p) {
     blocks[i].type = i < half ? 0 : 1;
     blocks[i].partner = null;
   }
-  const off = (p.bond_d ?? 0.5);
+  const off = (p.bond_distance ?? 0.5);
   for (let i = 0; i < half; i++) {
     const head = blocks[i];
     const tail = blocks[half + i];
@@ -310,9 +314,9 @@ function applyPairSheet(a, b, p) {
 // ---------------------------------------------------------------------------
 
 // Bonded H–T pair: applied unconditionally (no cutoff) so the bond is never
-// "lost" by separation. Pure radial force from -bond_rep/d + bond_att·W,
-// plus an alignment torque pulling each block's direction toward bond_dir =
-// (head.pos − tail.pos)/d.
+// "lost" by separation. Pure radial "want distance bond_distance" force
+// (-bond_repulsion/d + bond_attraction·W), plus an alignment torque
+// pulling each block's direction toward bond_dir = (head.pos − tail.pos)/d.
 function applyBondPair(head, tail, p) {
   const rx = head.pos[0] - tail.pos[0];
   const ry = head.pos[1] - tail.pos[1];
@@ -330,10 +334,10 @@ function applyBondPair(head, tail, p) {
   const inv_d = 1 / d;
   const bx = rx * inv_d, by = ry * inv_d, bz = rz * inv_d;  // bond_dir = T → H
 
-  // Radial: U = -rep/d + att / (1 + (d-bond_d)²)
-  const da = d - p.bond_d;
+  // Radial: U = -rep/d + att / (1 + (d-bond_distance)²)
+  const da = d - p.bond_distance;
   const W  = 1 / (1 + da * da);
-  const dU_dd = p.bond_rep / d2 - 2 * da * p.bond_att * W * W;
+  const dU_dd = p.bond_repulsion / d2 - 2 * da * p.bond_attraction * W * W;
   // Force on head along +bond_dir (which equals rhat from tail to head).
   const fmag = -dU_dd;
   head.force[0] += fmag * bx;
@@ -343,10 +347,10 @@ function applyBondPair(head, tail, p) {
   tail.force[1] -= fmag * by;
   tail.force[2] -= fmag * bz;
 
-  // Alignment torque on each block: τ = align_k · (n × bond_dir).
+  // Alignment torque on each block: τ = bond_alignment_torque · (n × bond_dir).
   // Parallel n with bond_dir is stable; antiparallel is unstable (small
   // perturbation analysis verified by ε-expansion).
-  const ak = p.align_k;
+  const ak = p.bond_alignment_torque;
   if (ak !== 0) {
     const nh = head.normal;
     head.torque[0] += ak * (nh[1]*bz - nh[2]*by);
@@ -360,12 +364,13 @@ function applyBondPair(head, tail, p) {
 }
 
 // Non-bonded pair in head_tail config. Cases:
-//   • H–H, T–T (same type): "want distance hh_d / tt_d", with the attraction
-//     term multiplied by (1 + n_a · n_b) / 2 — parallel = full attraction,
-//     antiparallel = no attraction (bare 1/d repulsion wins → blocks repel).
-//     Also gets a parallelizing torque (align_unconn_k) on each block.
-//   • H–T not bonded: pure -unbond_k/d affinity (no equilibrium, no cos,
-//     no torque).
+//   • H–H, T–T (same type): "want distance head_head_distance / tail_tail_distance",
+//     with the attraction term multiplied by (1 + n_a·n_b)/2 — parallel pairs
+//     fully attract, antiparallel ones get no attraction (bare 1/d repulsion
+//     wins, they repel). Also gets a parallelizing torque (pair_alignment_torque)
+//     on each block.
+//   • H–T not bonded: pure -unbonded_ht_attraction/d affinity (no equilibrium,
+//     no cos factor, no torque).
 // Bonded H–T pairs reach this function via the spatial hash too — we early-
 // reject them so their force is only applied via applyBondPair (no double-
 // counting).
@@ -393,14 +398,14 @@ function applyPairHeadTail(a, b, p) {
 
   let U0, dU0_dd;
   if (!sameType) {
-    // Unbonded H–T: U = -unbond_k / d.
-    U0 = -p.unbond_k * inv_d;
-    dU0_dd = p.unbond_k * inv_d * inv_d;   // d/dd[-k/d] = +k/d²
+    // Unbonded H–T: U = -unbonded_ht_attraction / d.
+    U0 = -p.unbonded_ht_attraction * inv_d;
+    dU0_dd = p.unbonded_ht_attraction * inv_d * inv_d;   // d/dd[-k/d] = +k/d²
   } else {
     // Same type: H–H or T–T.
-    const want_a   = a.type === 0 ? p.hh_d   : p.tt_d;
-    const want_rep = a.type === 0 ? p.hh_rep : p.tt_rep;
-    const want_att = a.type === 0 ? p.hh_att : p.tt_att;
+    const want_a   = a.type === 0 ? p.head_head_distance   : p.tail_tail_distance;
+    const want_rep = a.type === 0 ? p.head_head_repulsion  : p.tail_tail_repulsion;
+    const want_att = a.type === 0 ? p.head_head_attraction : p.tail_tail_attraction;
     const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
     const cf = (1 + alpha) * 0.5;        // (1 + cos θ) / 2
     const da = d - want_a;
@@ -420,8 +425,8 @@ function applyPairHeadTail(a, b, p) {
   // Parallelizing torque on same-type unconnected pairs (HH and TT).
   // Pure cross product (no n_a·n_b factor) makes parallel the only stable
   // equilibrium — antiparallel is unstable to any perturbation.
-  if (sameType && p.align_unconn_k !== 0) {
-    const k = p.align_unconn_k * m;
+  if (sameType && p.pair_alignment_torque !== 0) {
+    const k = p.pair_alignment_torque * m;
     const nA = a.normal, nB = b.normal;
     const cx = nA[1]*nB[2] - nA[2]*nB[1];
     const cy = nA[2]*nB[0] - nA[0]*nB[2];

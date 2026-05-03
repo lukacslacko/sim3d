@@ -8,7 +8,8 @@
     font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
   #ui { position: fixed; top: 10px; left: 10px; padding: 10px 12px;
     background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 6px;
-    backdrop-filter: blur(6px); min-width: 240px; }
+    backdrop-filter: blur(6px); min-width: 280px; max-height: calc(100vh - 20px);
+    overflow-y: auto; }
   #ui h1 { font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; color: #9ad8ff; }
   #ui label { display: flex; justify-content: space-between; gap: 8px;
     align-items: center; margin: 4px 0; }
@@ -32,42 +33,42 @@
 
 <div id="ui">
   <h1>SIM3D — block affinity</h1>
-  <label>config <select id="config">
+  <label title="Which block-type configuration is active. Switching rebuilds blocks.">config <select id="config">
     <option value="head_tail">head_tail</option>
     <option value="sheet">sheet</option>
   </select></label>
   <hr>
-  <label>blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="5000"></label>
-  <label>sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
-  <label>cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="2.0"></label>
+  <label title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="5000"></label>
+  <label title="Radius of the spherical container. Blocks are pushed inward from the wall.">sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
+  <label title="Pair-interaction cutoff distance. Pairs farther apart than this contribute zero force/torque (with a smooth taper between cutoff/2 and cutoff). Bonded H-T pairs ignore this — bonds always pull.">cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="2.0"></label>
   <hr>
   <div class="cfg-sheet">
-    <label>d_peak <input id="d_peak" type="number" step="0.05" value="0.4"></label>
-    <label>in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.6"></label>
-    <label>ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.2"></label>
-    <label>attraction <input id="attraction" type="number" step="0.1" value="-1.2"></label>
-    <label>bend (rad) <input id="bend" type="number" step="0.01" value="0.7"></label>
+    <label title="Equilibrium spacing for in-plane neighbors — the well's center along the displacement axis.">d_peak <input id="d_peak" type="number" step="0.05" value="0.4"></label>
+    <label title="−1/d coefficient for in-plane displacements. Should be NEGATIVE for an actual repulsive core.">in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.6"></label>
+    <label title="−1/d coefficient for stacked displacements. Should be NEGATIVE for an actual repulsive core.">ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.2"></label>
+    <label title="Attraction term coefficient. NEGATIVE for an attractive well at d_peak (so flat sheets form).">attraction <input id="attraction" type="number" step="0.1" value="-1.2"></label>
+    <label title="Intrinsic plane-bend angle in radians. Each block's plane tilts by this much, so flat sheets curl into bowls/shells with curvature ≈ bend.">bend (rad) <input id="bend" type="number" step="0.01" value="0.7"></label>
     <hr>
   </div>
   <div class="cfg-head_tail">
-    <label>bond d <input id="bond_d" type="number" step="0.05" value="0.6"></label>
-    <label>bond rep <input id="bond_rep" type="number" step="0.1" value="-0.5"></label>
-    <label>bond att <input id="bond_att" type="number" step="0.1" value="-2.0"></label>
-    <label>hh d <input id="hh_d" type="number" step="0.05" value="1.0"></label>
-    <label>hh rep <input id="hh_rep" type="number" step="0.1" value="-0.5"></label>
-    <label>hh att <input id="hh_att" type="number" step="0.1" value="-1.0"></label>
-    <label>tt d <input id="tt_d" type="number" step="0.05" value="1.0"></label>
-    <label>tt rep <input id="tt_rep" type="number" step="0.1" value="-0.5"></label>
-    <label>tt att <input id="tt_att" type="number" step="0.1" value="-1.0"></label>
-    <label>unbond k <input id="unbond_k" type="number" step="0.1" value="0.5"></label>
-    <label>align k (bond) <input id="align_k" type="number" step="0.1" value="1.0"></label>
-    <label>align k (HH/TT) <input id="align_unconn_k" type="number" step="0.05" value="0.3"></label>
+    <label title="Preferred separation between a head and the tail it's bonded to. The 'a' parameter in U = −rep/d + att/(1+(d−a)²) for the bond.">bond distance <input id="bond_distance" type="number" step="0.05" value="0.6"></label>
+    <label title="Short-range repulsion strength for the bonded pair (the −rep/d term). NEGATIVE → −rep/d × negative = +positive/d, an actual repulsive core that prevents overlap.">bond repulsion <input id="bond_repulsion" type="number" step="0.1" value="-0.5"></label>
+    <label title="Attractive well depth at the bond distance. NEGATIVE → energy minimum near d = bond distance (more negative = deeper well).">bond attraction <input id="bond_attraction" type="number" step="0.1" value="-2.0"></label>
+    <label title="Preferred distance between two heads (always unbonded — bonds only exist H↔T).">H–H distance <input id="head_head_distance" type="number" step="0.05" value="1.0"></label>
+    <label title="Short-range repulsion between two heads. NEGATIVE for actual repulsion.">H–H repulsion <input id="head_head_repulsion" type="number" step="0.1" value="-0.5"></label>
+    <label title="Attraction between two heads. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel (bare repulsion wins).">H–H attraction <input id="head_head_attraction" type="number" step="0.1" value="-1.0"></label>
+    <label title="Preferred distance between two tails (always unbonded — bonds only exist H↔T).">T–T distance <input id="tail_tail_distance" type="number" step="0.05" value="1.0"></label>
+    <label title="Short-range repulsion between two tails. NEGATIVE for actual repulsion.">T–T repulsion <input id="tail_tail_repulsion" type="number" step="0.1" value="-0.5"></label>
+    <label title="Attraction between two tails. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel tails fully attract, antiparallel ones repel.">T–T attraction <input id="tail_tail_attraction" type="number" step="0.1" value="-1.0"></label>
+    <label title="Strength of the pure −k/d attraction between a head and a tail that are NOT bonded to each other. No equilibrium distance — they just pull each other in until H–H or T–T repulsion stops them. This is the parameter formerly known (badly) as 'unbond k'. Set to 0 to ignore non-bond H–T attraction entirely.">unbonded H–T attraction <input id="unbonded_ht_attraction" type="number" step="0.1" value="0.5"></label>
+    <label title="Torque strength on each bonded H/T to align its direction with the bond axis (the line from tail to head). Higher = faster alignment. Parallel is the only stable equilibrium.">bond alignment torque <input id="bond_alignment_torque" type="number" step="0.1" value="1.0"></label>
+    <label title="Torque strength on unbonded same-type pairs (H↔H and T↔T) to make their directions parallel. Pure cross-product torque, so parallel is the only stable equilibrium. 0 = off.">pair alignment torque <input id="pair_alignment_torque" type="number" step="0.05" value="0.3"></label>
     <hr>
   </div>
-  <label>dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
-  <label>damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.994"></label>
-  <label>wall k <input id="wallK" type="number" step="0.1" value="1.0"></label>
-  <label>force cap <input id="fCap" type="number" step="1" value="50"></label>
+  <label title="Time-step multiplier. The base step is 0.04; this scales it. Higher = faster simulation but less stable.">dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
+  <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.994"></label>
+  <label title="Strength of the inward push from the sphere wall. Higher = blocks held closer to the center.">wall k <input id="wallK" type="number" step="0.1" value="1.0"></label>
+  <label title="Hard upper bound on per-block force/torque magnitudes (each step). Stops singularities (pairs at ~zero distance) from blowing up the integrator.">force cap <input id="fCap" type="number" step="1" value="50"></label>
   <div class="row">
     <button id="resetBtn">reset</button>
     <button id="pauseBtn">pause</button>
@@ -268,10 +269,11 @@ const URL_KEYS = [
   // sheet
   'd_peak', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction', 'bend',
   // head_tail
-  'bond_d', 'bond_rep', 'bond_att',
-  'hh_d', 'hh_rep', 'hh_att',
-  'tt_d', 'tt_rep', 'tt_att',
-  'unbond_k', 'align_k', 'align_unconn_k',
+  'bond_distance', 'bond_repulsion', 'bond_attraction',
+  'head_head_distance', 'head_head_repulsion', 'head_head_attraction',
+  'tail_tail_distance', 'tail_tail_repulsion', 'tail_tail_attraction',
+  'unbonded_ht_attraction',
+  'bond_alignment_torque', 'pair_alignment_torque',
   // shared
   'dtMul', 'damping', 'wallK', 'forceCap',
 ];
@@ -342,21 +344,21 @@ bindNumber('attraction',           'attraction');
 bindNumber('bend',                 'bend');
 
 // head_tail
-bindNumber('bond_d', 'bond_d', () => {
+bindNumber('bond_distance', 'bond_distance', () => {
   if (params.config === 'head_tail')
-    for (const b of blocks) b.mesh.scale.setScalar(params.bond_d);
+    for (const b of blocks) b.mesh.scale.setScalar(params.bond_distance);
 });
-bindNumber('bond_rep', 'bond_rep');
-bindNumber('bond_att', 'bond_att');
-bindNumber('hh_d',     'hh_d');
-bindNumber('hh_rep',   'hh_rep');
-bindNumber('hh_att',   'hh_att');
-bindNumber('tt_d',     'tt_d');
-bindNumber('tt_rep',   'tt_rep');
-bindNumber('tt_att',   'tt_att');
-bindNumber('unbond_k', 'unbond_k');
-bindNumber('align_k',  'align_k');
-bindNumber('align_unconn_k', 'align_unconn_k');
+bindNumber('bond_repulsion',          'bond_repulsion');
+bindNumber('bond_attraction',         'bond_attraction');
+bindNumber('head_head_distance',      'head_head_distance');
+bindNumber('head_head_repulsion',     'head_head_repulsion');
+bindNumber('head_head_attraction',    'head_head_attraction');
+bindNumber('tail_tail_distance',      'tail_tail_distance');
+bindNumber('tail_tail_repulsion',     'tail_tail_repulsion');
+bindNumber('tail_tail_attraction',    'tail_tail_attraction');
+bindNumber('unbonded_ht_attraction',  'unbonded_ht_attraction');
+bindNumber('bond_alignment_torque',   'bond_alignment_torque');
+bindNumber('pair_alignment_torque',   'pair_alignment_torque');
 
 // shared
 bindNumber('wallK', 'wallK');
