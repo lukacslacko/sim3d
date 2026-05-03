@@ -33,13 +33,16 @@
 
 <div id="ui">
   <h1>SIM3D — block affinity</h1>
-  <label title="Which block-type configuration is active. Switching rebuilds blocks.&#10;&#10;sheet: single block type with orientation-rich affinity.&#10;head_tail: 2-block chains (head ↔ tail). Pair params: head_head_*, tail_tail_*, unbonded_ht_attraction.&#10;head_body_tail: 3-block chains (head ↔ body ↔ tail). 6 unbonded pair types — hbt_{hh,bb,tt,hb,ht,bt}_* — each with its own distance/repulsion/attraction.">config <select id="config">
+  <label title="Which block-type configuration is active. Switching rebuilds blocks.&#10;&#10;sheet: single block type with orientation-rich affinity.&#10;head_tail: 2-block chains (head ↔ tail). Pair params: head_head_*, tail_tail_*, unbonded_ht_attraction.&#10;head_body_tail: 3-block chains (head ↔ body ↔ tail). 6 unbonded pair types — hbt_{hh,bb,tt,hb,ht,bt}_* — each with its own distance/repulsion/attraction.&#10;head_tail_water: head_tail + a third bondless, orientation-blind 'water' type. Three water pair models (W↔W, W↔H, W↔T). Two count sliders: nMolecules (head+tail pairs) and nWaters.">config <select id="config">
     <option value="head_body_tail">head_body_tail</option>
     <option value="head_tail">head_tail</option>
+    <option value="head_tail_water">head_tail_water</option>
     <option value="sheet">sheet</option>
   </select></label>
   <hr>
-  <label title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="1000"></label>
+  <label class="blocks-single" title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="1000"></label>
+  <label class="blocks-htw" title="Number of head-tail molecules in head_tail_water (each molecule = 1 head + 1 tail = 2 blocks). Total block count = 2·molecules + waters.">molecules <input id="nMolecules" type="number" min="0" max="5000" step="1" value="250"></label>
+  <label class="blocks-htw" title="Number of bondless water blocks in head_tail_water. Waters are orientation-blind and only feel the htw_w*_* pair forces.">waters <input id="nWaters" type="number" min="0" max="10000" step="1" value="500"></label>
   <label title="Radius of the spherical container. Blocks are pushed inward from the wall.">sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
   <label title="Pair-interaction cutoff distance. Pairs farther apart than this contribute zero force/torque (with a smooth taper between cutoff/2 and cutoff). Bonded H-T pairs ignore this — bonds always pull.">cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="3.0"></label>
   <hr>
@@ -89,6 +92,18 @@
     <label title="body↔tail attractive well. NEGATIVE for attraction; (1+cos θ)/2 factor.">B–T attraction <input id="hbt_bt_attraction" type="number" step="0.1" value="0"></label>
     <hr>
   </div>
+  <div class="cfg-htw">
+    <label title="water↔water preferred distance. Form U = −rep/d + att/(1+(d−distance)²). NO (1+cos θ)/2 factor — water doesn't care about orientation, and water blocks receive no torque from any pair.">W–W distance <input id="htw_ww_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="water↔water short-range repulsion. NEGATIVE for actual core repulsion (waters can't overlap).">W–W repulsion <input id="htw_ww_repulsion" type="number" step="0.05" value="0"></label>
+    <label title="water↔water attractive well. NEGATIVE for attraction (water self-cohesion — bulk water phase). The well minimum sits at W–W distance only when W–W repulsion = 0; nonzero repulsion shifts it outward.">W–W attraction <input id="htw_ww_attraction" type="number" step="0.05" value="-0.5"></label>
+    <label title="water↔head preferred distance.">W–H distance <input id="htw_wh_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="water↔head short-range repulsion. NEGATIVE for core repulsion.">W–H repulsion <input id="htw_wh_repulsion" type="number" step="0.05" value="0"></label>
+    <label title="water↔head attractive well depth. NEGATIVE for attraction (hydrophilic head). Set to 0 for indifferent.">W–H attraction <input id="htw_wh_attraction" type="number" step="0.05" value="-0.3"></label>
+    <label title="water↔tail preferred distance.">W–T distance <input id="htw_wt_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="water↔tail short-range repulsion. NEGATIVE for core repulsion (hydrophobic — water pushes tail away). With attraction=0 and a strong negative repulsion you get classic surfactant behavior: tails flee water, heads love it → micelles/bilayers.">W–T repulsion <input id="htw_wt_repulsion" type="number" step="0.05" value="-0.5"></label>
+    <label title="water↔tail attractive well depth. NEGATIVE for attraction. Usually 0 for hydrophobic tails.">W–T attraction <input id="htw_wt_attraction" type="number" step="0.05" value="0"></label>
+    <hr>
+  </div>
   <label title="Time-step multiplier. The base step is 0.04; this scales it. Higher = faster simulation but less stable.">dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
   <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.958"></label>
   <label title="Strength of the inward push from the sphere wall. Higher = blocks held closer to the center.">wall k <input id="wallK" type="number" step="0.1" value="0.1"></label>
@@ -121,9 +136,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // this number whenever physics.mjs changes its public surface.
 import {
   DEFAULTS, makeBlock, stepBlocks, refreshNormal,
-  setupHeadTail, setupHeadBodyTail,
+  setupHeadTail, setupHeadBodyTail, setupHeadTailWater,
   randomQuat, randomPointInBall,
-} from './physics.mjs?v=11';
+} from './physics.mjs?v=12';
 
 // ---------------------------------------------------------------------------
 // Parameters: live state, mirrors the controls in #ui. Physics module reads
@@ -133,12 +148,14 @@ import {
 const params = {
   ...DEFAULTS,
   nBlocks: 1000,
+  nMolecules: 250,
+  nWaters: 500,
   dtMul: 1,
 };
 
 let blocks = [];
 let scene, camera, renderer, controls, sphereMesh;
-let hexGeo, hexMat, headGeo, tailGeo;
+let hexGeo, hexMat, headGeo, tailGeo, waterGeo;
 let paused = false;
 
 // Map a block's normal vector to RGB using |n| = (|x|, |y|, |z|). The hex
@@ -180,6 +197,8 @@ function buildScene() {
   // which equals each block's local "direction" axis after quaternion rotate.
   headGeo = new THREE.BoxGeometry(1.0, 1.0, 0.15);     // wide × wide × thin
   tailGeo = new THREE.BoxGeometry(0.18, 0.18, 1.6);    // thin × thin × long
+  // ── 'head_tail_water' water geometry: small sphere — orientation-blind.
+  waterGeo = new THREE.SphereGeometry(0.5, 10, 8);
   // Single material prototype reused for every block in every config.
   // applyColorFromNormal() sets the per-block color (cloned material) based
   // on the block's pose direction, the same way for sheet/head/tail.
@@ -205,11 +224,17 @@ function rebuildBlocks() {
   for (const b of blocks) scene.remove(b.mesh);
   blocks = [];
   const R = params.sphereR * 0.9;
-  for (let i = 0; i < params.nBlocks; i++) {
+  // head_tail_water uses two sliders (nMolecules + nWaters); other configs
+  // use the single nBlocks count.
+  const total = params.config === 'head_tail_water'
+    ? 2 * params.nMolecules + params.nWaters
+    : params.nBlocks;
+  for (let i = 0; i < total; i++) {
     blocks.push(makeBlock(randomPointInBall(R), randomQuat()));
   }
-  if (params.config === 'head_tail')      setupHeadTail(blocks, params);
-  if (params.config === 'head_body_tail') setupHeadBodyTail(blocks, params);
+  if (params.config === 'head_tail')       setupHeadTail(blocks, params);
+  if (params.config === 'head_body_tail')  setupHeadBodyTail(blocks, params);
+  if (params.config === 'head_tail_water') setupHeadTailWater(blocks, params);
   for (const b of blocks) {
     refreshNormal(b);
     let mesh;
@@ -224,6 +249,16 @@ function rebuildBlocks() {
       // the long cuboid. All scaled by bond_distance for visual consistency.
       mesh = new THREE.Mesh(b.type === 1 ? tailGeo : headGeo, mat);
       mesh.scale.setScalar(params.bond_distance ?? 0.4);
+    } else if (params.config === 'head_tail_water') {
+      // head/tail look like head_tail; water is a small sphere scaled by W–W
+      // distance (rough visual stand-in for the water "particle size").
+      if (b.type === 2) {
+        mesh = new THREE.Mesh(waterGeo, mat);
+        mesh.scale.setScalar((params.htw_ww_distance ?? 0.5) * 0.5);
+      } else {
+        mesh = new THREE.Mesh(b.type === 0 ? headGeo : tailGeo, mat);
+        mesh.scale.setScalar(params.bond_distance ?? 0.4);
+      }
     } else {
       mesh = new THREE.Mesh(hexGeo, mat);
       mesh.scale.setScalar(params.d_peak ?? 0.4);
@@ -237,19 +272,29 @@ function rebuildBlocks() {
 }
 
 // Toggle the per-config UI sections so only the active one is visible.
-// head_tail and head_body_tail share the bond_* params (.cfg-bonded);
-// each has its own pair-param section (.cfg-head_tail vs .cfg-hbt).
+//   .cfg-bonded shows for any config that has bonded chains.
+//   .cfg-head_tail covers HH/TT/HT pair params — used by head_tail and
+//   head_tail_water (they share the head_tail pair model).
+//   .cfg-hbt and .cfg-htw are config-specific.
+//   .blocks-single = nBlocks slider; .blocks-htw = nMolecules + nWaters.
 function applyConfigVisibility() {
   const c = params.config;
-  const isBonded = (c === 'head_tail' || c === 'head_body_tail');
+  const isBonded   = (c === 'head_tail' || c === 'head_body_tail' || c === 'head_tail_water');
+  const hasHTpairs = (c === 'head_tail' || c === 'head_tail_water');
   for (const el of document.querySelectorAll('.cfg-sheet'))
     el.style.display = c === 'sheet' ? '' : 'none';
   for (const el of document.querySelectorAll('.cfg-bonded'))
     el.style.display = isBonded ? '' : 'none';
   for (const el of document.querySelectorAll('.cfg-head_tail'))
-    el.style.display = c === 'head_tail' ? '' : 'none';
+    el.style.display = hasHTpairs ? '' : 'none';
   for (const el of document.querySelectorAll('.cfg-hbt'))
     el.style.display = c === 'head_body_tail' ? '' : 'none';
+  for (const el of document.querySelectorAll('.cfg-htw'))
+    el.style.display = c === 'head_tail_water' ? '' : 'none';
+  for (const el of document.querySelectorAll('.blocks-single'))
+    el.style.display = c === 'head_tail_water' ? 'none' : '';
+  for (const el of document.querySelectorAll('.blocks-htw'))
+    el.style.display = c === 'head_tail_water' ? '' : 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +350,7 @@ addEventListener('resize', () => {
 // ---------------------------------------------------------------------------
 const URL_KEYS = [
   'config',
-  'nBlocks', 'sphereR', 'cutoff',
+  'nBlocks', 'nMolecules', 'nWaters', 'sphereR', 'cutoff',
   // sheet
   'd_peak', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction', 'bend',
   // bond params (shared by head_tail and head_body_tail)
@@ -322,6 +367,10 @@ const URL_KEYS = [
   'hbt_hb_distance', 'hbt_hb_repulsion', 'hbt_hb_attraction',
   'hbt_ht_distance', 'hbt_ht_repulsion', 'hbt_ht_attraction',
   'hbt_bt_distance', 'hbt_bt_repulsion', 'hbt_bt_attraction',
+  // head_tail_water-only pair params (3 water-related pair types)
+  'htw_ww_distance', 'htw_ww_repulsion', 'htw_ww_attraction',
+  'htw_wh_distance', 'htw_wh_repulsion', 'htw_wh_attraction',
+  'htw_wt_distance', 'htw_wt_repulsion', 'htw_wt_attraction',
   // shared
   'dtMul', 'damping', 'wallK', 'forceCap',
 ];
@@ -378,6 +427,8 @@ configEl.addEventListener('change', () => {
 });
 
 bindNumber('nBlocks', 'nBlocks', rebuildBlocks);
+bindNumber('nMolecules', 'nMolecules', rebuildBlocks);
+bindNumber('nWaters', 'nWaters', rebuildBlocks);
 bindNumber('sphereR', 'sphereR', () => { rebuildContainer(); rebuildBlocks(); });
 bindNumber('cutoff', 'cutoff');
 
@@ -414,6 +465,14 @@ bindNumber('unbonded_ht_attraction',  'unbonded_ht_attraction');
 for (const pair of ['hh', 'bb', 'tt', 'hb', 'ht', 'bt']) {
   for (const term of ['distance', 'repulsion', 'attraction']) {
     const id = `hbt_${pair}_${term}`;
+    bindNumber(id, id);
+  }
+}
+
+// head_tail_water-only — 3 water pair types × (distance, repulsion, attraction)
+for (const pair of ['ww', 'wh', 'wt']) {
+  for (const term of ['distance', 'repulsion', 'attraction']) {
+    const id = `htw_${pair}_${term}`;
     bindNumber(id, id);
   }
 }

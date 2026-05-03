@@ -15,6 +15,13 @@ export const DEFAULTS = {
   //                       distance/repulsion/attraction trio (hbt_*_* below).
   //                       Bonds (head↔body, body↔tail) use the same shared
   //                       bond_* + bond_alignment_torque as head_tail.
+  //   'head_tail_water' — head_tail (chain length 2) + a third orientation-
+  //                       blind, bondless 'water' type (id 2). Three water
+  //                       pair models — W↔W, W↔H, W↔T — each with the form
+  //                       U = -rep/d + att/(1+(d-dist)²) and NO (1+cos θ)/2
+  //                       factor (water doesn't care about orientation; it
+  //                       also receives no torque). Counts are split between
+  //                       nMolecules (head+tail pairs) and nWaters.
   config: 'head_body_tail',
 
   // ── shared parameters (apply to every config) ─────────────────────────
@@ -92,6 +99,16 @@ export const DEFAULTS = {
   hbt_hb_distance: 0.5, hbt_hb_repulsion: -0.2, hbt_hb_attraction:  0.0,
   hbt_ht_distance: 0.9, hbt_ht_repulsion: -3.0, hbt_ht_attraction:  0.0,
   hbt_bt_distance: 0.5, hbt_bt_repulsion: -0.2, hbt_bt_attraction:  0.0,
+
+  // ── 'head_tail_water' config parameters ───────────────────────────────
+  // Three orientation-blind pair types (water always isotropic). Form is
+  //   U = -rep/d + att / (1 + (d − dist)²)
+  // with no (1+cos θ)/2 factor — alignment_exponent is irrelevant here.
+  // Defaults set up a classic surfactant scenario: cohesive water, water
+  // mildly attracts heads (hydrophilic), water repels tails (hydrophobic).
+  htw_ww_distance: 0.5, htw_ww_repulsion:  0.0, htw_ww_attraction: -0.5,
+  htw_wh_distance: 0.5, htw_wh_repulsion:  0.0, htw_wh_attraction: -0.3,
+  htw_wt_distance: 0.5, htw_wt_repulsion: -0.5, htw_wt_attraction:  0.0,
 };
 
 export function makeBlock(pos, quat, opts = {}) {
@@ -104,8 +121,9 @@ export function makeBlock(pos, quat, opts = {}) {
     torque: [0, 0, 0],
     normal: [0, 0, 0],
     // Type ids per config:
-    //   head_tail:       0 = head, 1 = tail
-    //   head_body_tail:  0 = head, 1 = body, 2 = tail
+    //   head_tail:        0 = head, 1 = tail
+    //   head_body_tail:   0 = head, 1 = body, 2 = tail
+    //   head_tail_water:  0 = head, 1 = tail, 2 = water (bondless)
     type:       opts.type       ?? 0,
     // Two bond slots, ordered so each bond is visited exactly once when
     // iterating .bond_inner. For an unbonded block both are null.
@@ -135,6 +153,31 @@ export function setupHeadTail(blocks, p) {
   for (let i = 0; i < half; i++) {
     const head = blocks[i];
     const tail = blocks[half + i];
+    head.bond_inner = tail;
+    tail.bond_outer = head;
+    tail.pos[0] = head.pos[0] + (Math.random() * 2 - 1) * off;
+    tail.pos[1] = head.pos[1] + (Math.random() * 2 - 1) * off;
+    tail.pos[2] = head.pos[2] + (Math.random() * 2 - 1) * off;
+  }
+}
+
+// Set up head_tail_water typing/connectivity. First p.nMolecules blocks
+// become heads, the next p.nMolecules become tails (paired by index with
+// the heads), and the remaining p.nWaters blocks are bondless waters at
+// their random initial positions. Tails are nudged near their head so the
+// bond force starts near equilibrium.
+export function setupHeadTailWater(blocks, p) {
+  const M = p.nMolecules;
+  const N = blocks.length;
+  for (let i = 0; i < N; i++) {
+    blocks[i].type = i < M ? 0 : (i < 2 * M ? 1 : 2);
+    blocks[i].bond_inner = null;
+    blocks[i].bond_outer = null;
+  }
+  const off = (p.bond_distance ?? 0.5);
+  for (let i = 0; i < M; i++) {
+    const head = blocks[i];
+    const tail = blocks[M + i];
     head.bond_inner = tail;
     tail.bond_outer = head;
     tail.pos[0] = head.pos[0] + (Math.random() * 2 - 1) * off;
@@ -325,8 +368,9 @@ export function pairAffinityGrad(d, cA, cB, p) {
 
 // Pair force/torque dispatch — selects the per-config implementation.
 export function applyPair(a, b, p) {
-  if (p.config === 'head_body_tail') return applyPairHeadBodyTail(a, b, p);
-  if (p.config === 'head_tail')      return applyPairHeadTail(a, b, p);
+  if (p.config === 'head_tail_water') return applyPairHeadTailWater(a, b, p);
+  if (p.config === 'head_body_tail')  return applyPairHeadBodyTail(a, b, p);
+  if (p.config === 'head_tail')       return applyPairHeadTail(a, b, p);
   return applyPairSheet(a, b, p);
 }
 
@@ -572,6 +616,66 @@ function applyPairHeadBodyTail(a, b, p) {
   return 1;
 }
 
+// Non-bonded pair in head_tail_water config. Three water-related pair
+// types (W↔W, W↔H, W↔T) use orientation-blind want-distance form
+//   U = -rep/d + att/(1+(d−dist)²)         (no cf factor, no torque)
+// — water has no meaningful normal direction, so neither side gets a torque
+// and the head/tail's normal doesn't enter the energy. Pure head/tail pairs
+// (no water involved) are delegated to applyPairHeadTail so head_tail_water
+// inherits the head_head_*, tail_tail_*, unbonded_ht_attraction params and
+// the (1+cos θ)^k · att HH/TT alignment factor.
+function applyPairHeadTailWater(a, b, p) {
+  if (a.bond_inner === b || a.bond_outer === b) return 0;
+
+  const aIsW = a.type === 2;
+  const bIsW = b.type === 2;
+  if (!aIsW && !bIsW) return applyPairHeadTail(a, b, p);
+
+  const rx = b.pos[0] - a.pos[0];
+  const ry = b.pos[1] - a.pos[1];
+  const rz = b.pos[2] - a.pos[2];
+  const d2 = rx*rx + ry*ry + rz*rz;
+  if (d2 > p.cutoff * p.cutoff) return 0;
+  if (d2 < 1e-8) {
+    const k = 5;
+    const px = Math.random()-0.5, py = Math.random()-0.5, pz = Math.random()-0.5;
+    a.force[0] -= px*k; a.force[1] -= py*k; a.force[2] -= pz*k;
+    b.force[0] += px*k; b.force[1] += py*k; b.force[2] += pz*k;
+    return 1;
+  }
+  const d = Math.sqrt(d2);
+  const inv_d = 1 / d;
+  const m  = smoothMask(d, p.cutoff);
+  if (m === 0) return 1;
+  const dm = smoothMaskDeriv(d, p.cutoff);
+
+  let want_a, want_rep, want_att;
+  if (aIsW && bIsW) {
+    want_a = p.htw_ww_distance; want_rep = p.htw_ww_repulsion; want_att = p.htw_ww_attraction;
+  } else {
+    const otherType = aIsW ? b.type : a.type;
+    if (otherType === 0) {
+      want_a = p.htw_wh_distance; want_rep = p.htw_wh_repulsion; want_att = p.htw_wh_attraction;
+    } else {
+      want_a = p.htw_wt_distance; want_rep = p.htw_wt_repulsion; want_att = p.htw_wt_attraction;
+    }
+  }
+
+  const da = d - want_a;
+  const W  = 1 / (1 + da * da);
+  const U0     = -want_rep * inv_d + want_att * W;
+  const dU0_dd =  want_rep * inv_d * inv_d - 2 * da * want_att * W * W;
+
+  const dU_dd = m * dU0_dd + dm * U0;
+  const fmag = -dU_dd;
+  const fx = fmag * rx * inv_d;
+  const fy = fmag * ry * inv_d;
+  const fz = fmag * rz * inv_d;
+  a.force[0] -= fx; a.force[1] -= fy; a.force[2] -= fz;
+  b.force[0] += fx; b.force[1] += fy; b.force[2] += fz;
+  return 1;
+}
+
 // Wall: U_wall = wallK / (R - |pos|). Repels inward, blows up at the wall.
 export function applyWall(b, p) {
   const r = Math.hypot(b.pos[0], b.pos[1], b.pos[2]);
@@ -617,13 +721,11 @@ export function stepBlocks(blocks, dt, p) {
 
   // Bond force/torque: applied unconditionally (no cutoff). Each bond is
   // stored as outer.bond_inner = inner, so iterating bond_inner over every
-  // block hits each bond exactly once for either head_tail (1 bond/chain)
-  // or head_body_tail (2 bonds/chain).
-  if (p.config === 'head_tail' || p.config === 'head_body_tail') {
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i];
-      if (b.bond_inner !== null) applyBondForce(b, b.bond_inner, p);
-    }
+  // block hits each bond exactly once. Sheet config and bondless waters in
+  // head_tail_water have bond_inner=null, so the loop is a no-op for them.
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i];
+    if (b.bond_inner !== null) applyBondForce(b, b.bond_inner, p);
   }
 
   // Bin blocks into cells of size = cutoff. Track both the cell index per
