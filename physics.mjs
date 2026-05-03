@@ -69,6 +69,13 @@ export const DEFAULTS = {
   // its direction parallel to the bond axis (tail → head). Antiparallel is
   // the unstable equilibrium; parallel is the stable one.
   bond_alignment_torque:            20.0,
+  // Exponent on the (1 + n_a·n_b)/2 alignment factor used by every same-type
+  // pair (head_tail H–H, T–T) and every HBT pair type. cf = ((1+cos θ)/2)^k.
+  // k = 1: linear in (1+cos θ)/2 (the factor that's been used historically).
+  // k > 1: attraction sharpens around parallel — only near-aligned pairs feel
+  //        any attractive well; off-axis ones get only the bare repulsion.
+  // k < 1: attraction is more permissive (still 0 at antiparallel).
+  alignment_exponent:                1.0,
 
   // ── 'head_body_tail' config parameters ────────────────────────────────
   // Six unbonded pair types (3 same-type + 3 cross-type). All use the
@@ -474,7 +481,8 @@ function applyPairHeadTail(a, b, p) {
     const want_rep = a.type === 0 ? p.head_head_repulsion  : p.tail_tail_repulsion;
     const want_att = a.type === 0 ? p.head_head_attraction : p.tail_tail_attraction;
     const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
-    const cf = (1 + alpha) * 0.5;        // (1 + cos θ) / 2
+    const base = (1 + alpha) * 0.5;      // (1 + cos θ) / 2 ∈ [0, 1]
+    const cf = p.alignment_exponent === 1 ? base : Math.pow(base, p.alignment_exponent);
     const da = d - want_a;
     const W  = 1 / (1 + da * da);
     U0     = -want_rep * inv_d + cf * want_att * W;
@@ -547,7 +555,8 @@ function applyPairHeadBodyTail(a, b, p) {
   }
 
   const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
-  const cf = (1 + alpha) * 0.5;
+  const base = (1 + alpha) * 0.5;        // (1 + cos θ) / 2 ∈ [0, 1]
+  const cf = p.alignment_exponent === 1 ? base : Math.pow(base, p.alignment_exponent);
   const da = d - want_a;
   const W  = 1 / (1 + da * da);
   const U0     = -want_rep * inv_d + cf * want_att * W;
