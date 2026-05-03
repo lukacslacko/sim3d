@@ -5,34 +5,61 @@
 // A block has its sheet normal along its local +Z axis.
 
 export const DEFAULTS = {
+  // Active block-type configuration. Selects which pair model + initial
+  // typing/connectivity is used. See applyPair() for dispatch.
+  //   'sheet'      — original single-type model with orientation-rich affinity
+  //   'head_tail'  — two types (head, tail), each head bonded to exactly one tail
+  config: 'head_tail',
+
+  // ── shared parameters (apply to every config) ─────────────────────────
   sphereR: 9,
   damping: 0.994,
   wallK: 1.0,
   forceCap: 50,
-  // Pair affinity parameters — see pairAffinity().
-  // Sign convention: the pair energy is built around -1/d, so for a parameter
-  // to act as an actual repulsion (energy → +∞ as d → 0) it should be NEGATIVE
-  // (since -1/d × negative = +positive/d). Likewise `attraction` should be
-  // negative to make the well at d_peak an actual energy minimum.
+  // Interaction cutoff: pair energies are multiplied by a smooth mask m(d)
+  // that is 1 for d ≤ cutoff/2 and tapers to 0 at d = cutoff. The spatial
+  // hash in stepBlocks then skips any pair whose cells aren't adjacent —
+  // exact, since pairs past cutoff contribute zero. Bonded pairs in the
+  // head_tail config are exempt: they're force-applied unconditionally so
+  // the bond never gets "lost" by separation.
+  cutoff: 2.0,
+
+  // ── 'sheet' config parameters ─────────────────────────────────────────
+  // Sign convention: -1/d times a NEGATIVE param yields a true positive
+  // repulsion at small d (since -1/d × negative = +positive/d). Likewise
+  // a negative `attraction` makes the well at d_peak an energy minimum.
   in_plane_repulsion:   -0.6,
   orthogonal_repulsion: -1.2,
   attraction:           -1.2,
   d_peak:                0.4,
-  // Interaction cutoff: the analytic energy is multiplied by a smooth mask
-  // m(d) that is 1 for d ≤ cutoff/2 and tapers to 0 at d = cutoff. Pairs
-  // beyond cutoff contribute nothing to force or torque, so the spatial-hash
-  // skip in stepBlocks is exact (no truncation error).
-  cutoff: 2.0,
-  // Intrinsic plane bend (radians). Each block's reference plane is tilted
-  // by `bend` toward its own normal direction, so the in-plane equilibrium
-  // wants neighbors at angle `bend` above the plane instead of in it. With
-  // both blocks of a pair wanting that, sheets pick up curvature ≈ bend
-  // per neighbor — small values curl flat sheets into bowls; larger ones
-  // close them into blob-like shells.
-  bend: 0.7,
+  bend:                  0.7,
+
+  // ── 'head_tail' config parameters ─────────────────────────────────────
+  // Same sign convention as sheet: negative `*_rep` and `*_att` give
+  // physical repulsion + attractive well in the "want distance a" form
+  // U = −rep/d + att / (1 + (d − a)²).
+  // Bonded H–T pair (no cos factor; orientation is set by the bond torque).
+  bond_d:    0.6,
+  bond_rep: -0.5,
+  bond_att: -2.0,
+  // Head–head pair (with (1+cos θ)/2 factor on attraction).
+  hh_d:      1.0,
+  hh_rep:   -0.5,
+  hh_att:   -1.0,
+  // Tail–tail pair (with (1+cos θ)/2 factor on attraction).
+  tt_d:      1.0,
+  tt_rep:   -0.5,
+  tt_att:   -1.0,
+  // Unbonded head–tail: pure -unbond_k/d affinity (no equilibrium).
+  unbond_k:  0.5,
+  // Bond alignment torque strength. Each bonded block feels a torque
+  //   τ = align_k · (n × bond_dir),    bond_dir = (head.pos − tail.pos) / d
+  // pulling its direction toward the line of centers (parallel = stable
+  // equilibrium; antiparallel = unstable).
+  align_k:   1.0,
 };
 
-export function makeBlock(pos, quat) {
+export function makeBlock(pos, quat, opts = {}) {
   return {
     pos:    [pos[0], pos[1], pos[2]],
     quat:   [quat[0], quat[1], quat[2], quat[3]],
@@ -41,7 +68,33 @@ export function makeBlock(pos, quat) {
     force:  [0, 0, 0],
     torque: [0, 0, 0],
     normal: [0, 0, 0],
+    type:    opts.type ?? 0,           // head_tail config: 0 = head, 1 = tail. Ignored otherwise.
+    partner: opts.partner ?? null,     // head_tail: reference to bonded partner block (or null)
   };
+}
+
+// Set up the head_tail typing/connectivity on a freshly-created block array.
+// First half become heads, second half tails; head[i] bonded to tail[i].
+// Tails are nudged to start near their bonded head so the bond force has
+// a near-equilibrium starting point (otherwise an initial random placement
+// might leave a bond stretched across the whole sphere).
+export function setupHeadTail(blocks, p) {
+  const N = blocks.length;
+  const half = N >> 1;
+  for (let i = 0; i < N; i++) {
+    blocks[i].type = i < half ? 0 : 1;
+    blocks[i].partner = null;
+  }
+  const off = (p.bond_d ?? 0.5);
+  for (let i = 0; i < half; i++) {
+    const head = blocks[i];
+    const tail = blocks[half + i];
+    head.partner = tail;
+    tail.partner = head;
+    tail.pos[0] = head.pos[0] + (Math.random() * 2 - 1) * off;
+    tail.pos[1] = head.pos[1] + (Math.random() * 2 - 1) * off;
+    tail.pos[2] = head.pos[2] + (Math.random() * 2 - 1) * off;
+  }
 }
 
 // Rotate v by quaternion q.
@@ -186,9 +239,15 @@ export function pairAffinityGrad(d, cA, cB, p) {
   return [m * dU_dd0 + dm * U0, m * dU_dcA0, m * dU_dcB0];
 }
 
+// Pair force/torque dispatch — selects the per-config implementation.
+export function applyPair(a, b, p) {
+  if (p.config === 'head_tail') return applyPairHeadTail(a, b, p);
+  return applyPairSheet(a, b, p);
+}
+
 // Accumulate pair force on a, b and torques (about each block's own normal).
 const _r = [0,0,0], _rhat = [0,0,0], _fb = [0,0,0];
-export function applyPair(a, b, p) {
+function applyPairSheet(a, b, p) {
   _r[0] = b.pos[0] - a.pos[0];
   _r[1] = b.pos[1] - a.pos[1];
   _r[2] = b.pos[2] - a.pos[2];
@@ -240,6 +299,124 @@ export function applyPair(a, b, p) {
   return 1;
 }
 
+// ---------------------------------------------------------------------------
+// head_tail config — pair forces and bond force/torque.
+// ---------------------------------------------------------------------------
+
+// "Want distance a" pair energy:  U₀(d) = -rep/d + att / (1 + (d-a)²).
+// Returns the radial-mask-corrected dU/dd given the unmasked U₀ and dU₀/dd.
+function _maskedDeriv(d, U0, dU0_dd, p) {
+  const m  = smoothMask(d, p.cutoff);
+  if (m === 0) return [0, 0];
+  const dm = smoothMaskDeriv(d, p.cutoff);
+  return [m * dU0_dd + dm * U0, m];
+}
+
+// Bonded H–T pair: applied unconditionally (no cutoff) so the bond is never
+// "lost" by separation. Pure radial force from -bond_rep/d + bond_att·W,
+// plus an alignment torque pulling each block's direction toward bond_dir =
+// (head.pos − tail.pos)/d.
+function applyBondPair(head, tail, p) {
+  const rx = head.pos[0] - tail.pos[0];
+  const ry = head.pos[1] - tail.pos[1];
+  const rz = head.pos[2] - tail.pos[2];
+  const d2 = rx*rx + ry*ry + rz*rz;
+  if (d2 < 1e-8) {
+    // Degenerate overlap — random kick to break symmetry, no torque.
+    const k = 5;
+    const px = Math.random()-0.5, py = Math.random()-0.5, pz = Math.random()-0.5;
+    head.force[0] += px*k; head.force[1] += py*k; head.force[2] += pz*k;
+    tail.force[0] -= px*k; tail.force[1] -= py*k; tail.force[2] -= pz*k;
+    return;
+  }
+  const d = Math.sqrt(d2);
+  const inv_d = 1 / d;
+  const bx = rx * inv_d, by = ry * inv_d, bz = rz * inv_d;  // bond_dir = T → H
+
+  // Radial: U = -rep/d + att / (1 + (d-bond_d)²)
+  const da = d - p.bond_d;
+  const W  = 1 / (1 + da * da);
+  const dU_dd = p.bond_rep / d2 - 2 * da * p.bond_att * W * W;
+  // Force on head along +bond_dir (which equals rhat from tail to head).
+  const fmag = -dU_dd;
+  head.force[0] += fmag * bx;
+  head.force[1] += fmag * by;
+  head.force[2] += fmag * bz;
+  tail.force[0] -= fmag * bx;
+  tail.force[1] -= fmag * by;
+  tail.force[2] -= fmag * bz;
+
+  // Alignment torque on each block: τ = align_k · (n × bond_dir).
+  // Parallel n with bond_dir is stable; antiparallel is unstable (small
+  // perturbation analysis verified by ε-expansion).
+  const ak = p.align_k;
+  if (ak !== 0) {
+    const nh = head.normal;
+    head.torque[0] += ak * (nh[1]*bz - nh[2]*by);
+    head.torque[1] += ak * (nh[2]*bx - nh[0]*bz);
+    head.torque[2] += ak * (nh[0]*by - nh[1]*bx);
+    const nt = tail.normal;
+    tail.torque[0] += ak * (nt[1]*bz - nt[2]*by);
+    tail.torque[1] += ak * (nt[2]*bx - nt[0]*bz);
+    tail.torque[2] += ak * (nt[0]*by - nt[1]*bx);
+  }
+}
+
+// Non-bonded pair in head_tail config. Cases:
+//   • H–H, T–T (same type): "want distance hh_d / tt_d", with the attraction
+//     term multiplied by (1 + n_a · n_b) / 2 — parallel = full attraction,
+//     antiparallel = no attraction (bare 1/d repulsion wins → blocks repel).
+//   • H–T not bonded: pure -unbond_k/d affinity (no equilibrium, no cos).
+// Bonded H–T pairs reach this function via the spatial hash too — we early-
+// reject them so their force is only applied via applyBondPair (no double-
+// counting).
+function applyPairHeadTail(a, b, p) {
+  if (a.partner === b) return 0;       // bonded — handled separately
+
+  const rx = b.pos[0] - a.pos[0];
+  const ry = b.pos[1] - a.pos[1];
+  const rz = b.pos[2] - a.pos[2];
+  const d2 = rx*rx + ry*ry + rz*rz;
+  if (d2 > p.cutoff * p.cutoff) return 0;
+  if (d2 < 1e-8) {
+    const k = 5;
+    const px = Math.random()-0.5, py = Math.random()-0.5, pz = Math.random()-0.5;
+    a.force[0] -= px*k; a.force[1] -= py*k; a.force[2] -= pz*k;
+    b.force[0] += px*k; b.force[1] += py*k; b.force[2] += pz*k;
+    return 1;
+  }
+  const d = Math.sqrt(d2);
+  const inv_d = 1 / d;
+
+  let U0, dU0_dd;
+  if (a.type !== b.type) {
+    // Unbonded H–T: U = -unbond_k / d.
+    U0 = -p.unbond_k * inv_d;
+    dU0_dd = p.unbond_k * inv_d * inv_d;   // d/dd[-k/d] = +k/d²
+  } else {
+    // Same type: H–H or T–T.
+    const want_a   = a.type === 0 ? p.hh_d   : p.tt_d;
+    const want_rep = a.type === 0 ? p.hh_rep : p.tt_rep;
+    const want_att = a.type === 0 ? p.hh_att : p.tt_att;
+    const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
+    const cf = (1 + alpha) * 0.5;        // (1 + cos θ) / 2
+    const da = d - want_a;
+    const W  = 1 / (1 + da * da);
+    U0     = -want_rep * inv_d + cf * want_att * W;
+    dU0_dd =  want_rep * inv_d * inv_d - 2 * da * cf * want_att * W * W;
+  }
+
+  const [dU_dd, m] = _maskedDeriv(d, U0, dU0_dd, p);
+  if (m === 0) return 1;
+  const fmag = -dU_dd;
+  const fx = fmag * rx * inv_d;
+  const fy = fmag * ry * inv_d;
+  const fz = fmag * rz * inv_d;
+  a.force[0] -= fx; a.force[1] -= fy; a.force[2] -= fz;
+  b.force[0] += fx; b.force[1] += fy; b.force[2] += fz;
+  return 1;
+}
+
 // Wall: U_wall = wallK / (R - |pos|). Repels inward, blows up at the wall.
 export function applyWall(b, p) {
   const r = Math.hypot(b.pos[0], b.pos[1], b.pos[2]);
@@ -281,6 +458,15 @@ export function stepBlocks(blocks, dt, p) {
     b.force[0] = b.force[1] = b.force[2] = 0;
     b.torque[0] = b.torque[1] = b.torque[2] = 0;
     refreshNormal(b);
+  }
+
+  // head_tail config: apply bond force/torque first (unconditional, no cutoff).
+  // Iterate via heads only — each bond is visited exactly once.
+  if (p.config === 'head_tail') {
+    for (let i = 0; i < blocks.length; i++) {
+      const h = blocks[i];
+      if (h.type === 0 && h.partner !== null) applyBondPair(h, h.partner, p);
+    }
   }
 
   // Bin blocks into cells of size = cutoff. Track both the cell index per

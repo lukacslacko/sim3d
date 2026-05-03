@@ -32,16 +32,37 @@
 
 <div id="ui">
   <h1>SIM3D — block affinity</h1>
+  <label>config <select id="config">
+    <option value="head_tail">head_tail</option>
+    <option value="sheet">sheet</option>
+  </select></label>
+  <hr>
   <label>blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="5000"></label>
   <label>sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
-  <hr>
-  <label>d_peak <input id="d_peak" type="number" step="0.05" value="0.4"></label>
   <label>cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="2.0"></label>
-  <label>in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.6"></label>
-  <label>ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.2"></label>
-  <label>attraction <input id="attraction" type="number" step="0.1" value="-1.2"></label>
-  <label>bend (rad) <input id="bend" type="number" step="0.01" value="0.7"></label>
   <hr>
+  <div class="cfg-sheet">
+    <label>d_peak <input id="d_peak" type="number" step="0.05" value="0.4"></label>
+    <label>in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.6"></label>
+    <label>ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.2"></label>
+    <label>attraction <input id="attraction" type="number" step="0.1" value="-1.2"></label>
+    <label>bend (rad) <input id="bend" type="number" step="0.01" value="0.7"></label>
+    <hr>
+  </div>
+  <div class="cfg-head_tail">
+    <label>bond d <input id="bond_d" type="number" step="0.05" value="0.6"></label>
+    <label>bond rep <input id="bond_rep" type="number" step="0.1" value="-0.5"></label>
+    <label>bond att <input id="bond_att" type="number" step="0.1" value="-2.0"></label>
+    <label>hh d <input id="hh_d" type="number" step="0.05" value="1.0"></label>
+    <label>hh rep <input id="hh_rep" type="number" step="0.1" value="-0.5"></label>
+    <label>hh att <input id="hh_att" type="number" step="0.1" value="-1.0"></label>
+    <label>tt d <input id="tt_d" type="number" step="0.05" value="1.0"></label>
+    <label>tt rep <input id="tt_rep" type="number" step="0.1" value="-0.5"></label>
+    <label>tt att <input id="tt_att" type="number" step="0.1" value="-1.0"></label>
+    <label>unbond k <input id="unbond_k" type="number" step="0.1" value="0.5"></label>
+    <label>align k <input id="align_k" type="number" step="0.1" value="1.0"></label>
+    <hr>
+  </div>
   <label>dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
   <label>damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.994"></label>
   <label>wall k <input id="wallK" type="number" step="0.1" value="1.0"></label>
@@ -69,7 +90,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
-  DEFAULTS, makeBlock, stepBlocks, refreshNormal, randomQuat, randomPointInBall,
+  DEFAULTS, makeBlock, stepBlocks, refreshNormal, setupHeadTail,
+  randomQuat, randomPointInBall,
 } from './physics.mjs';
 
 // ---------------------------------------------------------------------------
@@ -85,7 +107,7 @@ const params = {
 
 let blocks = [];
 let scene, camera, renderer, controls, sphereMesh;
-let hexGeo, hexMat;
+let hexGeo, hexMat, headGeo, tailGeo, headMatProto, tailMatProto;
 let paused = false;
 
 // Map a block's normal vector to RGB using |n| = (|x|, |y|, |z|). The hex
@@ -119,14 +141,20 @@ function buildScene() {
   const rim = new THREE.DirectionalLight(0x88aaff, 0.4);
   rim.position.set(-6, -3, -8); scene.add(rim);
 
-  // Hex prism: thin cylinder, 6 sides, axis = local Z (rotated from default Y).
-  // Diameter = eqDist so visual size matches the equilibrium spacing.
+  // ── 'sheet' geometry: thin hex prism, axis = local Z (rotated from default Y).
   hexGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.08, 6);
   hexGeo.rotateX(Math.PI / 2);
   hexMat = new THREE.MeshStandardMaterial({
     color: 0x7fbcff, metalness: 0.1, roughness: 0.55,
     side: THREE.DoubleSide,
   });
+  // ── 'head_tail' geometry: head = flat cuboid (face ⊥ direction); tail =
+  // long cuboid (length ‖ direction). BoxGeometry's third axis is depth = Z,
+  // which equals each block's local "direction" axis after quaternion rotate.
+  headGeo = new THREE.BoxGeometry(1.0, 1.0, 0.15);     // wide × wide × thin
+  tailGeo = new THREE.BoxGeometry(0.18, 0.18, 1.6);    // thin × thin × long
+  headMatProto = new THREE.MeshStandardMaterial({ color: 0xff5544, metalness: 0.05, roughness: 0.55 });
+  tailMatProto = new THREE.MeshStandardMaterial({ color: 0x5588ff, metalness: 0.05, roughness: 0.55 });
 
   rebuildContainer();
   rebuildBlocks();
@@ -146,18 +174,39 @@ function rebuildBlocks() {
   blocks = [];
   const R = params.sphereR * 0.9;
   for (let i = 0; i < params.nBlocks; i++) {
-    const b = makeBlock(randomPointInBall(R), randomQuat());
+    blocks.push(makeBlock(randomPointInBall(R), randomQuat()));
+  }
+  if (params.config === 'head_tail') setupHeadTail(blocks, params);
+  for (const b of blocks) {
     refreshNormal(b);
-    const mat = hexMat.clone();
-    applyColorFromNormal(mat, b.normal);
-    const mesh = new THREE.Mesh(hexGeo, mat);
-    mesh.scale.setScalar(params.d_peak); // visual size tracks equilibrium spacing
+    let mesh;
+    if (params.config === 'head_tail') {
+      // head = flat cuboid, tail = long cuboid; both scaled by bond_d.
+      const isHead = b.type === 0;
+      const mat = (isHead ? headMatProto : tailMatProto).clone();
+      mesh = new THREE.Mesh(isHead ? headGeo : tailGeo, mat);
+      mesh.scale.setScalar(params.bond_d);
+    } else {
+      // sheet hex prism, color by normal.
+      const mat = hexMat.clone();
+      applyColorFromNormal(mat, b.normal);
+      mesh = new THREE.Mesh(hexGeo, mat);
+      mesh.scale.setScalar(params.d_peak);
+    }
     mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
     mesh.quaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
     b.mesh = mesh;
     scene.add(mesh);
-    blocks.push(b);
   }
+  applyConfigVisibility();
+}
+
+// Toggle the per-config UI sections so only the active one is visible.
+function applyConfigVisibility() {
+  for (const el of document.querySelectorAll('.cfg-sheet'))
+    el.style.display = params.config === 'sheet' ? '' : 'none';
+  for (const el of document.querySelectorAll('.cfg-head_tail'))
+    el.style.display = params.config === 'head_tail' ? '' : 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -168,12 +217,13 @@ let frame = 0, fpsTick = performance.now(), fps = 0;
 let lastStepStats = { pairsChecked: 0, pairsComputed: 0 };
 
 function syncMeshes() {
+  const isSheet = params.config === 'sheet';
   for (const b of blocks) {
     b.mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
     b.mesh.quaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
-    // b.normal was refreshed at the top of the last stepBlocks; one frame
-    // stale, but visually indistinguishable.
-    applyColorFromNormal(b.mesh.material, b.normal);
+    // Color is fixed per-block in head_tail mode (set at creation by type),
+    // so only re-paint sheet blocks each frame from their current normal.
+    if (isSheet) applyColorFromNormal(b.mesh.material, b.normal);
   }
 }
 
@@ -212,18 +262,27 @@ addEventListener('resize', () => {
 // on load. This makes the page state shareable as a URL.
 // ---------------------------------------------------------------------------
 const URL_KEYS = [
-  'nBlocks', 'sphereR',
-  'd_peak', 'cutoff', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction', 'bend',
+  'config',
+  'nBlocks', 'sphereR', 'cutoff',
+  // sheet
+  'd_peak', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction', 'bend',
+  // head_tail
+  'bond_d', 'bond_rep', 'bond_att',
+  'hh_d', 'hh_rep', 'hh_att',
+  'tt_d', 'tt_rep', 'tt_att',
+  'unbond_k', 'align_k',
+  // shared
   'dtMul', 'damping', 'wallK', 'forceCap',
 ];
 
 function applyURLToParams() {
   const sp = new URLSearchParams(location.search);
   for (const k of URL_KEYS) {
-    if (sp.has(k)) {
-      const v = parseFloat(sp.get(k));
-      if (Number.isFinite(v)) params[k] = v;
-    }
+    if (!sp.has(k)) continue;
+    const raw = sp.get(k);
+    if (k === 'config') { params[k] = raw; continue; }
+    const v = parseFloat(raw);
+    if (Number.isFinite(v)) params[k] = v;
   }
 }
 function writeParamsToURL() {
@@ -257,22 +316,54 @@ function bindRange(id, key) {
 
 applyURLToParams();
 buildScene();
+
+// ── config dropdown ─────────────────────────────────────────────────────────
+const configEl = document.getElementById('config');
+configEl.value = params.config;
+configEl.addEventListener('change', () => {
+  params.config = configEl.value;
+  rebuildBlocks();          // type/partner setup, geometry, color all change
+  writeParamsToURL();
+});
+
 bindNumber('nBlocks', 'nBlocks', rebuildBlocks);
 bindNumber('sphereR', 'sphereR', () => { rebuildContainer(); rebuildBlocks(); });
-bindNumber('d_peak',  'd_peak', () => {
-  for (const b of blocks) b.mesh.scale.setScalar(params.d_peak);
-});
 bindNumber('cutoff', 'cutoff');
+
+// sheet
+bindNumber('d_peak',  'd_peak', () => {
+  if (params.config === 'sheet')
+    for (const b of blocks) b.mesh.scale.setScalar(params.d_peak);
+});
 bindNumber('in_plane_repulsion',   'in_plane_repulsion');
 bindNumber('orthogonal_repulsion', 'orthogonal_repulsion');
 bindNumber('attraction',           'attraction');
 bindNumber('bend',                 'bend');
+
+// head_tail
+bindNumber('bond_d', 'bond_d', () => {
+  if (params.config === 'head_tail')
+    for (const b of blocks) b.mesh.scale.setScalar(params.bond_d);
+});
+bindNumber('bond_rep', 'bond_rep');
+bindNumber('bond_att', 'bond_att');
+bindNumber('hh_d',     'hh_d');
+bindNumber('hh_rep',   'hh_rep');
+bindNumber('hh_att',   'hh_att');
+bindNumber('tt_d',     'tt_d');
+bindNumber('tt_rep',   'tt_rep');
+bindNumber('tt_att',   'tt_att');
+bindNumber('unbond_k', 'unbond_k');
+bindNumber('align_k',  'align_k');
+
+// shared
 bindNumber('wallK', 'wallK');
 bindNumber('fCap',  'forceCap');
 bindRange('dtMul',  'dtMul');
 bindRange('damping','damping');
 
-writeParamsToURL();  // canonicalize the URL on first load
+applyConfigVisibility();    // hide the inactive config's section
+writeParamsToURL();         // canonicalize the URL on first load
 
 document.getElementById('resetBtn').onclick = rebuildBlocks;
 document.getElementById('pauseBtn').onclick = (e) => {
