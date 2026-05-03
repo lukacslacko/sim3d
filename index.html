@@ -91,10 +91,14 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+// Cache-bust the physics module so a stale browser-cached copy can't
+// silently mismatch this index.html (e.g. param renames where the spread
+// of DEFAULTS would otherwise be missing keys → NaN mesh scales). Bump
+// this number whenever physics.mjs changes its public surface.
 import {
   DEFAULTS, makeBlock, stepBlocks, refreshNormal, setupHeadTail,
   randomQuat, randomPointInBall,
-} from './physics.mjs';
+} from './physics.mjs?v=3';
 
 // ---------------------------------------------------------------------------
 // Parameters: live state, mirrors the controls in #ui. Physics module reads
@@ -183,17 +187,19 @@ function rebuildBlocks() {
     refreshNormal(b);
     let mesh;
     if (params.config === 'head_tail') {
-      // head = flat cuboid, tail = long cuboid; both scaled by bond_d.
+      // head = flat cuboid, tail = long cuboid; both scaled by bond_distance.
       const isHead = b.type === 0;
       const mat = (isHead ? headMatProto : tailMatProto).clone();
       mesh = new THREE.Mesh(isHead ? headGeo : tailGeo, mat);
-      mesh.scale.setScalar(params.bond_d);
+      // Hardcoded fallback (0.6) protects against any future stale-module
+      // case where the param key happens to be undefined in `params`.
+      mesh.scale.setScalar(params.bond_distance ?? 0.6);
     } else {
       // sheet hex prism, color by normal.
       const mat = hexMat.clone();
       applyColorFromNormal(mat, b.normal);
       mesh = new THREE.Mesh(hexGeo, mat);
-      mesh.scale.setScalar(params.d_peak);
+      mesh.scale.setScalar(params.d_peak ?? 0.4);
     }
     mesh.position.set(b.pos[0], b.pos[1], b.pos[2]);
     mesh.quaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
