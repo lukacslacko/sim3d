@@ -13,7 +13,7 @@ export const DEFAULTS = {
 
   // ── shared parameters (apply to every config) ─────────────────────────
   sphereR: 9,
-  damping: 0.946,
+  damping: 0.989,
   wallK: 0.1,
   forceCap: 50,
   // Interaction cutoff: pair energies are multiplied by a smooth mask m(d)
@@ -43,18 +43,18 @@ export const DEFAULTS = {
 
   // Bonded H–T pair: no (1+cos θ)/2 factor (orientation is set by the
   // bond_alignment_torque below).
-  bond_distance:                     0.6,
+  bond_distance:                     0.4,
   bond_repulsion:                    0.0,
-  bond_attraction:                  -2.7,
+  bond_attraction:                 -20.0,
   // Head–head pair (always unbonded). Attraction multiplied by
   // (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel.
-  head_head_distance:                0.6,
-  head_head_repulsion:              -0.3,
-  head_head_attraction:             -0.6,
+  head_head_distance:                0.9,
+  head_head_repulsion:              -0.1,
+  head_head_attraction:              0.0,
   // Tail–tail pair (always unbonded). Same (1+cos θ)/2 factor as H–H.
   tail_tail_distance:                0.5,
-  tail_tail_repulsion:              -0.2,
-  tail_tail_attraction:             -0.6,
+  tail_tail_repulsion:               0.0,
+  tail_tail_attraction:             -0.15,
   // Unbonded H–T pair (a head and a tail that aren't bonded to each other).
   // Pure −k/d affinity, no equilibrium — they just pull each other in until
   // something else (H–H or T–T repulsion) stops them.
@@ -62,11 +62,7 @@ export const DEFAULTS = {
   // Each bonded block feels a torque τ = strength · (n × bond_dir) pulling
   // its direction parallel to the bond axis (tail → head). Antiparallel is
   // the unstable equilibrium; parallel is the stable one.
-  bond_alignment_torque:             2.0,
-  // Same-type unbonded pairs (H–H and T–T) feel τ = strength · m(d) · (n_a × n_b)
-  // on each, pulling their directions parallel. Pure cross-product (no
-  // n·n factor) → parallel is the only stable equilibrium. 0 = off.
-  pair_alignment_torque:             0.0,
+  bond_alignment_torque:            20.0,
 };
 
 export function makeBlock(pos, quat, opts = {}) {
@@ -367,8 +363,7 @@ function applyBondPair(head, tail, p) {
 //   • H–H, T–T (same type): "want distance head_head_distance / tail_tail_distance",
 //     with the attraction term multiplied by (1 + n_a·n_b)/2 — parallel pairs
 //     fully attract, antiparallel ones get no attraction (bare 1/d repulsion
-//     wins, they repel). Also gets a parallelizing torque (pair_alignment_torque)
-//     on each block.
+//     wins, they repel). Force only; no torque.
 //   • H–T not bonded: pure -unbonded_ht_attraction/d affinity (no equilibrium,
 //     no cos factor, no torque).
 // Bonded H–T pairs reach this function via the spatial hash too — we early-
@@ -394,10 +389,8 @@ function applyPairHeadTail(a, b, p) {
   const m  = smoothMask(d, p.cutoff);
   if (m === 0) return 1;
   const dm = smoothMaskDeriv(d, p.cutoff);
-  const sameType = a.type === b.type;
-
   let U0, dU0_dd;
-  if (!sameType) {
+  if (a.type !== b.type) {
     // Unbonded H–T: U = -unbonded_ht_attraction / d.
     U0 = -p.unbonded_ht_attraction * inv_d;
     dU0_dd = p.unbonded_ht_attraction * inv_d * inv_d;   // d/dd[-k/d] = +k/d²
@@ -421,20 +414,6 @@ function applyPairHeadTail(a, b, p) {
   const fz = fmag * rz * inv_d;
   a.force[0] -= fx; a.force[1] -= fy; a.force[2] -= fz;
   b.force[0] += fx; b.force[1] += fy; b.force[2] += fz;
-
-  // Parallelizing torque on same-type unconnected pairs (HH and TT).
-  // Pure cross product (no n_a·n_b factor) makes parallel the only stable
-  // equilibrium — antiparallel is unstable to any perturbation.
-  if (sameType && p.pair_alignment_torque !== 0) {
-    const k = p.pair_alignment_torque * m;
-    const nA = a.normal, nB = b.normal;
-    const cx = nA[1]*nB[2] - nA[2]*nB[1];
-    const cy = nA[2]*nB[0] - nA[0]*nB[2];
-    const cz = nA[0]*nB[1] - nA[1]*nB[0];
-    a.torque[0] += k * cx; a.torque[1] += k * cy; a.torque[2] += k * cz;
-    b.torque[0] -= k * cx; b.torque[1] -= k * cy; b.torque[2] -= k * cz;
-  }
-
   return 1;
 }
 
