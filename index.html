@@ -56,7 +56,7 @@
     <label title="Short-range repulsion strength for bonded pairs (the −rep/d term). NEGATIVE → −rep/d × negative = +positive/d, an actual repulsive core that prevents overlap.">bond repulsion <input id="bond_repulsion" type="number" step="0.1" value="0"></label>
     <label title="Attractive well depth at the bond distance. NEGATIVE → energy minimum near d = bond distance (more negative = deeper well).">bond attraction <input id="bond_attraction" type="number" step="0.1" value="-20"></label>
     <label title="Torque on each bonded block to align its normal with bond_dir (= inner→outer = tail→head direction). Higher = faster alignment. In head_body_tail, both bonds align all three blocks the same way (tail→head).">bond alignment torque <input id="bond_alignment_torque" type="number" step="0.1" value="20"></label>
-    <label title="Exponent k on the alignment factor used by every (1+cos θ)/2 attraction in this config: cf = ((1 + n_a·n_b)/2)^k. Applies to head_tail's HH and TT, and to ALL 6 head_body_tail pair types (HH, BB, TT, HB, HT, BT). k=1 is the historical linear factor. k>1 sharpens — only nearly-parallel pairs feel the attractive well, off-axis ones get only the bare repulsion. k<1 makes attraction more permissive. Antiparallel always gives cf=0.">alignment exponent <input id="alignment_exponent" type="number" min="0" step="0.1" value="1"></label>
+    <label title="Exponent k on the alignment factor used by every (1+cos θ)/2 attraction in this config: cf = ((1 + n_a·n_b)/2)^k. Applies to head_tail's HH and TT, and to ALL 6 head_body_tail pair types (HH, BB, TT, HB, HT, BT). k=1 is the historical linear factor. k>1 sharpens — only nearly-parallel pairs feel the attractive well, off-axis ones get only the bare repulsion. k<1 makes attraction more permissive. Antiparallel always gives cf=0.">alignment exponent <input id="alignment_exponent" type="number" min="0" step="0.1" value="5"></label>
   </div>
   <div class="cfg-head_tail">
     <label title="Preferred distance between two heads (always unbonded — bonds only exist H↔T in this config).">H–H distance <input id="head_head_distance" type="number" step="0.05" value="0.9"></label>
@@ -69,20 +69,20 @@
     <hr>
   </div>
   <div class="cfg-hbt">
-    <label title="head↔head distance. Want-distance form U = −rep/d + (1+cos θ)/2 · att / (1 + (d − distance)²).">H–H distance <input id="hbt_hh_distance" type="number" step="0.05" value="0.9"></label>
+    <label title="head↔head distance. Want-distance form U = −rep/d + (1+cos θ)/2 · att / (1 + (d − distance)²).">H–H distance <input id="hbt_hh_distance" type="number" step="0.05" value="0.8"></label>
     <label title="head↔head short-range repulsion. NEGATIVE for actual core repulsion (e.g. to spread heads on a surface).">H–H repulsion <input id="hbt_hh_repulsion" type="number" step="0.1" value="-0.1"></label>
-    <label title="head↔head attractive well depth at H–H distance. NEGATIVE for actual attraction. Multiplied by (1 + n_a·n_b)/2 — parallel-aligned heads attract, antiparallel ones get no attraction.">H–H attraction <input id="hbt_hh_attraction" type="number" step="0.1" value="0"></label>
-    <label title="body↔body distance. Bodies pack the bulk of the structure.">B–B distance <input id="hbt_bb_distance" type="number" step="0.05" value="0.5"></label>
-    <label title="body↔body short-range repulsion. NEGATIVE for actual core repulsion.">B–B repulsion <input id="hbt_bb_repulsion" type="number" step="0.1" value="0"></label>
-    <label title="body↔body attractive well at B–B distance. NEGATIVE for attraction. (1+cos θ)/2 factor — bodies stack better when their normals are aligned.">B–B attraction <input id="hbt_bb_attraction" type="number" step="0.1" value="-0.15"></label>
-    <label title="tail↔tail distance.">T–T distance <input id="hbt_tt_distance" type="number" step="0.05" value="0.9"></label>
+    <label title="head↔head attractive well depth at H–H distance. NEGATIVE for actual attraction. Multiplied by (1 + n_a·n_b)/2 — parallel-aligned heads attract, antiparallel ones get no attraction.">H–H attraction <input id="hbt_hh_attraction" type="number" step="0.1" value="-0.3"></label>
+    <label title="body↔body distance. Bodies pack the bulk of the structure.">B–B distance <input id="hbt_bb_distance" type="number" step="0.05" value="1"></label>
+    <label title="body↔body short-range repulsion. NEGATIVE for actual core repulsion.">B–B repulsion <input id="hbt_bb_repulsion" type="number" step="0.1" value="-0.1"></label>
+    <label title="body↔body attractive well at B–B distance. NEGATIVE for attraction. (1+cos θ)/2 factor — bodies stack better when their normals are aligned.">B–B attraction <input id="hbt_bb_attraction" type="number" step="0.1" value="-0.3"></label>
+    <label title="tail↔tail distance.">T–T distance <input id="hbt_tt_distance" type="number" step="0.05" value="0.8"></label>
     <label title="tail↔tail short-range repulsion. NEGATIVE for actual core repulsion (e.g. to spread tails on the inner surface).">T–T repulsion <input id="hbt_tt_repulsion" type="number" step="0.1" value="-0.1"></label>
-    <label title="tail↔tail attractive well at T–T distance. NEGATIVE for attraction; (1+cos θ)/2 factor.">T–T attraction <input id="hbt_tt_attraction" type="number" step="0.1" value="0"></label>
+    <label title="tail↔tail attractive well at T–T distance. NEGATIVE for attraction; (1+cos θ)/2 factor.">T–T attraction <input id="hbt_tt_attraction" type="number" step="0.1" value="-0.3"></label>
     <label title="head↔body distance (between blocks NOT bonded together; their bonds are handled separately).">H–B distance <input id="hbt_hb_distance" type="number" step="0.05" value="0.5"></label>
     <label title="head↔body short-range repulsion. NEGATIVE for core repulsion.">H–B repulsion <input id="hbt_hb_repulsion" type="number" step="0.1" value="0"></label>
     <label title="head↔body attractive well. NEGATIVE for attraction; (1+cos θ)/2 factor.">H–B attraction <input id="hbt_hb_attraction" type="number" step="0.1" value="0"></label>
     <label title="head↔tail distance — INTRA-CHAIN ONLY. Only the head and tail of the same molecule (sharing a body) interact via these params; heads and tails in different chains feel nothing from each other.">H–T distance (same chain) <input id="hbt_ht_distance" type="number" step="0.05" value="0.9"></label>
-    <label title="head↔tail short-range repulsion — INTRA-CHAIN ONLY. NEGATIVE for actual repulsion. Useful to push the head and tail of a chain apart so it stays straight.">H–T repulsion (same chain) <input id="hbt_ht_repulsion" type="number" step="0.1" value="0"></label>
+    <label title="head↔tail short-range repulsion — INTRA-CHAIN ONLY. NEGATIVE for actual repulsion. Useful to push the head and tail of a chain apart so it stays straight.">H–T repulsion (same chain) <input id="hbt_ht_repulsion" type="number" step="0.1" value="-3"></label>
     <label title="head↔tail attractive well — INTRA-CHAIN ONLY. NEGATIVE for attraction; (1+cos θ)/2 factor.">H–T attraction (same chain) <input id="hbt_ht_attraction" type="number" step="0.1" value="0"></label>
     <label title="body↔tail distance (between blocks NOT bonded together).">B–T distance <input id="hbt_bt_distance" type="number" step="0.05" value="0.5"></label>
     <label title="body↔tail short-range repulsion. NEGATIVE for core repulsion.">B–T repulsion <input id="hbt_bt_repulsion" type="number" step="0.1" value="0"></label>
@@ -90,7 +90,7 @@
     <hr>
   </div>
   <label title="Time-step multiplier. The base step is 0.04; this scales it. Higher = faster simulation but less stable.">dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
-  <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.989"></label>
+  <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.958"></label>
   <label title="Strength of the inward push from the sphere wall. Higher = blocks held closer to the center.">wall k <input id="wallK" type="number" step="0.1" value="0.1"></label>
   <label title="Hard upper bound on per-block force/torque magnitudes (each step). Stops singularities (pairs at ~zero distance) from blowing up the integrator.">force cap <input id="fCap" type="number" step="1" value="50"></label>
   <div class="row">
@@ -123,7 +123,7 @@ import {
   DEFAULTS, makeBlock, stepBlocks, refreshNormal,
   setupHeadTail, setupHeadBodyTail,
   randomQuat, randomPointInBall,
-} from './physics.mjs?v=9';
+} from './physics.mjs?v=10';
 
 // ---------------------------------------------------------------------------
 // Parameters: live state, mirrors the controls in #ui. Physics module reads

@@ -19,7 +19,7 @@ export const DEFAULTS = {
 
   // ── shared parameters (apply to every config) ─────────────────────────
   sphereR: 9,
-  damping: 0.989,
+  damping: 0.958,
   wallK: 0.1,
   forceCap: 50,
   // Interaction cutoff: pair energies are multiplied by a smooth mask m(d)
@@ -75,7 +75,7 @@ export const DEFAULTS = {
   // k > 1: attraction sharpens around parallel — only near-aligned pairs feel
   //        any attractive well; off-axis ones get only the bare repulsion.
   // k < 1: attraction is more permissive (still 0 at antiparallel).
-  alignment_exponent:                1.0,
+  alignment_exponent:                5.0,
 
   // ── 'head_body_tail' config parameters ────────────────────────────────
   // Six unbonded pair types (3 same-type + 3 cross-type). All use the
@@ -86,11 +86,11 @@ export const DEFAULTS = {
   // at `distance`). Bonded H–B and B–T pairs are skipped here and handled
   // by applyBondForce instead. Defaults below preserve the prior collapsed
   // behavior (BB-only attraction; HH soft repulsion; everything else off).
-  hbt_hh_distance: 0.9, hbt_hh_repulsion: -0.1, hbt_hh_attraction:  0.0,
-  hbt_bb_distance: 0.5, hbt_bb_repulsion:  0.0, hbt_bb_attraction: -0.15,
-  hbt_tt_distance: 0.9, hbt_tt_repulsion: -0.1, hbt_tt_attraction:  0.0,
+  hbt_hh_distance: 0.8, hbt_hh_repulsion: -0.1, hbt_hh_attraction: -0.3,
+  hbt_bb_distance: 1.0, hbt_bb_repulsion: -0.1, hbt_bb_attraction: -0.3,
+  hbt_tt_distance: 0.8, hbt_tt_repulsion: -0.1, hbt_tt_attraction: -0.3,
   hbt_hb_distance: 0.5, hbt_hb_repulsion:  0.0, hbt_hb_attraction:  0.0,
-  hbt_ht_distance: 0.9, hbt_ht_repulsion:  0.0, hbt_ht_attraction:  0.0,
+  hbt_ht_distance: 0.9, hbt_ht_repulsion: -3.0, hbt_ht_attraction:  0.0,
   hbt_bt_distance: 0.5, hbt_bt_repulsion:  0.0, hbt_bt_attraction:  0.0,
 };
 
