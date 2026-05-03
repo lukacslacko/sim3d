@@ -10,9 +10,11 @@ export const DEFAULTS = {
   //   'sheet'           — single-type model with orientation-rich affinity
   //   'head_tail'       — head bonded to exactly one tail (chain length 2)
   //   'head_body_tail'  — three types in a chain head←body→tail (chain
-  //                       length 3); H and T behave like the head_tail
-  //                       'head', body behaves like the head_tail 'tail',
-  //                       and the head_tail params are re-used as-is.
+  //                       length 3); each of the 6 unordered unbonded pair
+  //                       types (HH, BB, TT, HB, HT, BT) has its own
+  //                       distance/repulsion/attraction trio (hbt_*_* below).
+  //                       Bonds (head↔body, body↔tail) use the same shared
+  //                       bond_* + bond_alignment_torque as head_tail.
   config: 'head_body_tail',
 
   // ── shared parameters (apply to every config) ─────────────────────────
@@ -67,6 +69,22 @@ export const DEFAULTS = {
   // its direction parallel to the bond axis (tail → head). Antiparallel is
   // the unstable equilibrium; parallel is the stable one.
   bond_alignment_torque:            20.0,
+
+  // ── 'head_body_tail' config parameters ────────────────────────────────
+  // Six unbonded pair types (3 same-type + 3 cross-type). All use the
+  // shared "want distance" form
+  //   U = -repulsion/d + (1 + n_a·n_b)/2 · attraction / (1 + (d − distance)²)
+  // with the same sign convention as the rest of this file (negative
+  // repulsion = real core repulsion; negative attraction = attractive well
+  // at `distance`). Bonded H–B and B–T pairs are skipped here and handled
+  // by applyBondForce instead. Defaults below preserve the prior collapsed
+  // behavior (BB-only attraction; HH soft repulsion; everything else off).
+  hbt_hh_distance: 0.9, hbt_hh_repulsion: -0.1, hbt_hh_attraction:  0.0,
+  hbt_bb_distance: 0.5, hbt_bb_repulsion:  0.0, hbt_bb_attraction: -0.15,
+  hbt_tt_distance: 0.9, hbt_tt_repulsion: -0.1, hbt_tt_attraction:  0.0,
+  hbt_hb_distance: 0.5, hbt_hb_repulsion:  0.0, hbt_hb_attraction:  0.0,
+  hbt_ht_distance: 0.9, hbt_ht_repulsion:  0.0, hbt_ht_attraction:  0.0,
+  hbt_bt_distance: 0.5, hbt_bt_repulsion:  0.0, hbt_bt_attraction:  0.0,
 };
 
 export function makeBlock(pos, quat, opts = {}) {
@@ -473,15 +491,17 @@ function applyPairHeadTail(a, b, p) {
   return 1;
 }
 
-// Non-bonded pair in head_body_tail config. Same structure as
-// applyPairHeadTail but with a 3-type dispatch:
-//   • body↔body  → tail_tail_* with (1+cos θ)/2 attraction factor
-//   • two ends (head/tail in any combination — the user spec calls heads
-//     and tails "act like 'heads' in the previous head_tail config", so
-//     H↔H, H↔T, T↔T all share head_head_*) → head_head_* with cos factor
-//   • cross-type ends↔body that aren't bonded → −unbonded_ht_attraction/d
+// Non-bonded pair in head_body_tail config. Six unordered (a.type, b.type)
+// combinations dispatch to their own want_distance / repulsion / attraction
+// trio (hbt_hh_*, hbt_bb_*, hbt_tt_*, hbt_hb_*, hbt_ht_*, hbt_bt_*).
+// All six use the same form:
+//     U = −repulsion/d + (1 + n_a·n_b)/2 · attraction / (1 + (d − distance)²)
 // Bonded pairs (head↔body or body↔tail in the same chain) are skipped here
-// and handled by applyBondForce.
+// and handled unconditionally by applyBondForce.
+//
+// Type ids: 0 = H, 1 = B, 2 = T. Encoding the unordered pair as
+// (min·3 + max) gives keys 0,1,2,4,5,8 for HH,HB,HT,BB,BT,TT — a flat
+// switch is the cheapest dispatch.
 function applyPairHeadBodyTail(a, b, p) {
   if (a.bond_inner === b || a.bond_outer === b) return 0;
 
@@ -503,26 +523,24 @@ function applyPairHeadBodyTail(a, b, p) {
   if (m === 0) return 1;
   const dm = smoothMaskDeriv(d, p.cutoff);
 
-  const aIsBody = a.type === 1, bIsBody = b.type === 1;
-
-  let U0, dU0_dd;
-  if (aIsBody !== bIsBody) {
-    // Cross: end ↔ body (not bonded — bonded ones early-returned above).
-    // Pure -k/d affinity, no equilibrium, no cos factor.
-    U0     = -p.unbonded_ht_attraction * inv_d;
-    dU0_dd =  p.unbonded_ht_attraction * inv_d * inv_d;
-  } else {
-    // Same group: both body, or both ends (any combo of H/T).
-    const want_a   = aIsBody ? p.tail_tail_distance   : p.head_head_distance;
-    const want_rep = aIsBody ? p.tail_tail_repulsion  : p.head_head_repulsion;
-    const want_att = aIsBody ? p.tail_tail_attraction : p.head_head_attraction;
-    const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
-    const cf = (1 + alpha) * 0.5;
-    const da = d - want_a;
-    const W  = 1 / (1 + da * da);
-    U0     = -want_rep * inv_d + cf * want_att * W;
-    dU0_dd =  want_rep * inv_d * inv_d - 2 * da * cf * want_att * W * W;
+  const tlo = a.type < b.type ? a.type : b.type;
+  const thi = a.type < b.type ? b.type : a.type;
+  let want_a, want_rep, want_att;
+  switch (tlo * 3 + thi) {
+    case 0: want_a = p.hbt_hh_distance; want_rep = p.hbt_hh_repulsion; want_att = p.hbt_hh_attraction; break;
+    case 1: want_a = p.hbt_hb_distance; want_rep = p.hbt_hb_repulsion; want_att = p.hbt_hb_attraction; break;
+    case 2: want_a = p.hbt_ht_distance; want_rep = p.hbt_ht_repulsion; want_att = p.hbt_ht_attraction; break;
+    case 4: want_a = p.hbt_bb_distance; want_rep = p.hbt_bb_repulsion; want_att = p.hbt_bb_attraction; break;
+    case 5: want_a = p.hbt_bt_distance; want_rep = p.hbt_bt_repulsion; want_att = p.hbt_bt_attraction; break;
+    default: want_a = p.hbt_tt_distance; want_rep = p.hbt_tt_repulsion; want_att = p.hbt_tt_attraction; break;
   }
+
+  const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
+  const cf = (1 + alpha) * 0.5;
+  const da = d - want_a;
+  const W  = 1 / (1 + da * da);
+  const U0     = -want_rep * inv_d + cf * want_att * W;
+  const dU0_dd =  want_rep * inv_d * inv_d - 2 * da * cf * want_att * W * W;
 
   const dU_dd = m * dU0_dd + dm * U0;
   const fmag = -dU_dd;

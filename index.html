@@ -33,7 +33,7 @@
 
 <div id="ui">
   <h1>SIM3D — block affinity</h1>
-  <label title="Which block-type configuration is active. Switching rebuilds blocks.&#10;&#10;sheet: single block type with orientation-rich affinity.&#10;head_tail: 2-block chains (head ↔ tail).&#10;head_body_tail: 3-block chains (head ↔ body ↔ tail). H and T re-use the head_head_* params; body re-uses tail_tail_*; both bonds use bond_*.">config <select id="config">
+  <label title="Which block-type configuration is active. Switching rebuilds blocks.&#10;&#10;sheet: single block type with orientation-rich affinity.&#10;head_tail: 2-block chains (head ↔ tail). Pair params: head_head_*, tail_tail_*, unbonded_ht_attraction.&#10;head_body_tail: 3-block chains (head ↔ body ↔ tail). 6 unbonded pair types — hbt_{hh,bb,tt,hb,ht,bt}_* — each with its own distance/repulsion/attraction.">config <select id="config">
     <option value="head_body_tail">head_body_tail</option>
     <option value="head_tail">head_tail</option>
     <option value="sheet">sheet</option>
@@ -51,18 +51,41 @@
     <label title="Intrinsic plane-bend angle in radians. Each block's plane tilts by this much, so flat sheets curl into bowls/shells with curvature ≈ bend.">bend (rad) <input id="bend" type="number" step="0.01" value="0.7"></label>
     <hr>
   </div>
-  <div class="cfg-head_tail">
-    <label title="Preferred separation between a head and the tail it's bonded to. The 'a' parameter in U = −rep/d + att/(1+(d−a)²) for the bond.">bond distance <input id="bond_distance" type="number" step="0.05" value="0.4"></label>
-    <label title="Short-range repulsion strength for the bonded pair (the −rep/d term). NEGATIVE → −rep/d × negative = +positive/d, an actual repulsive core that prevents overlap.">bond repulsion <input id="bond_repulsion" type="number" step="0.1" value="0"></label>
+  <div class="cfg-bonded">
+    <label title="Preferred separation between two bonded blocks (H↔T in head_tail; H↔B and B↔T in head_body_tail). The 'a' parameter in U = −rep/d + att/(1+(d−a)²) for each bond.">bond distance <input id="bond_distance" type="number" step="0.05" value="0.4"></label>
+    <label title="Short-range repulsion strength for bonded pairs (the −rep/d term). NEGATIVE → −rep/d × negative = +positive/d, an actual repulsive core that prevents overlap.">bond repulsion <input id="bond_repulsion" type="number" step="0.1" value="0"></label>
     <label title="Attractive well depth at the bond distance. NEGATIVE → energy minimum near d = bond distance (more negative = deeper well).">bond attraction <input id="bond_attraction" type="number" step="0.1" value="-20"></label>
-    <label title="Preferred distance between two heads (always unbonded — bonds only exist H↔T).">H–H distance <input id="head_head_distance" type="number" step="0.05" value="0.9"></label>
+    <label title="Torque on each bonded block to align its normal with bond_dir (= inner→outer = tail→head direction). Higher = faster alignment. In head_body_tail, both bonds align all three blocks the same way (tail→head).">bond alignment torque <input id="bond_alignment_torque" type="number" step="0.1" value="20"></label>
+  </div>
+  <div class="cfg-head_tail">
+    <label title="Preferred distance between two heads (always unbonded — bonds only exist H↔T in this config).">H–H distance <input id="head_head_distance" type="number" step="0.05" value="0.9"></label>
     <label title="Short-range repulsion between two heads. NEGATIVE for actual repulsion.">H–H repulsion <input id="head_head_repulsion" type="number" step="0.1" value="-0.1"></label>
     <label title="Attraction between two heads. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel heads fully attract, antiparallel ones repel (bare repulsion wins).">H–H attraction <input id="head_head_attraction" type="number" step="0.1" value="0"></label>
-    <label title="Preferred distance between two tails (always unbonded — bonds only exist H↔T).">T–T distance <input id="tail_tail_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="Preferred distance between two tails.">T–T distance <input id="tail_tail_distance" type="number" step="0.05" value="0.5"></label>
     <label title="Short-range repulsion between two tails. NEGATIVE for actual repulsion.">T–T repulsion <input id="tail_tail_repulsion" type="number" step="0.1" value="0"></label>
     <label title="Attraction between two tails. NEGATIVE for an attractive well. Multiplied by (1 + n_a·n_b)/2 — parallel tails fully attract, antiparallel ones repel.">T–T attraction <input id="tail_tail_attraction" type="number" step="0.1" value="-0.15"></label>
-    <label title="Strength of the pure −k/d attraction between a head and a tail that are NOT bonded to each other. No equilibrium distance — they just pull each other in until H–H or T–T repulsion stops them. This is the parameter formerly known (badly) as 'unbond k'. Set to 0 to ignore non-bond H–T attraction entirely.">unbonded H–T attraction <input id="unbonded_ht_attraction" type="number" step="0.1" value="0"></label>
-    <label title="Torque strength on each bonded H/T to align its direction with the bond axis (the line from tail to head). Higher = faster alignment. Parallel is the only stable equilibrium.">bond alignment torque <input id="bond_alignment_torque" type="number" step="0.1" value="20"></label>
+    <label title="Pure −k/d attraction between an unbonded head and tail. No equilibrium distance — they just pull each other in until H–H or T–T repulsion stops them. Set to 0 to disable.">unbonded H–T attraction <input id="unbonded_ht_attraction" type="number" step="0.1" value="0"></label>
+    <hr>
+  </div>
+  <div class="cfg-hbt">
+    <label title="head↔head distance. Want-distance form U = −rep/d + (1+cos θ)/2 · att / (1 + (d − distance)²).">H–H distance <input id="hbt_hh_distance" type="number" step="0.05" value="0.9"></label>
+    <label title="head↔head short-range repulsion. NEGATIVE for actual core repulsion (e.g. to spread heads on a surface).">H–H repulsion <input id="hbt_hh_repulsion" type="number" step="0.1" value="-0.1"></label>
+    <label title="head↔head attractive well depth at H–H distance. NEGATIVE for actual attraction. Multiplied by (1 + n_a·n_b)/2 — parallel-aligned heads attract, antiparallel ones get no attraction.">H–H attraction <input id="hbt_hh_attraction" type="number" step="0.1" value="0"></label>
+    <label title="body↔body distance. Bodies pack the bulk of the structure.">B–B distance <input id="hbt_bb_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="body↔body short-range repulsion. NEGATIVE for actual core repulsion.">B–B repulsion <input id="hbt_bb_repulsion" type="number" step="0.1" value="0"></label>
+    <label title="body↔body attractive well at B–B distance. NEGATIVE for attraction. (1+cos θ)/2 factor — bodies stack better when their normals are aligned.">B–B attraction <input id="hbt_bb_attraction" type="number" step="0.1" value="-0.15"></label>
+    <label title="tail↔tail distance.">T–T distance <input id="hbt_tt_distance" type="number" step="0.05" value="0.9"></label>
+    <label title="tail↔tail short-range repulsion. NEGATIVE for actual core repulsion (e.g. to spread tails on the inner surface).">T–T repulsion <input id="hbt_tt_repulsion" type="number" step="0.1" value="-0.1"></label>
+    <label title="tail↔tail attractive well at T–T distance. NEGATIVE for attraction; (1+cos θ)/2 factor.">T–T attraction <input id="hbt_tt_attraction" type="number" step="0.1" value="0"></label>
+    <label title="head↔body distance (between blocks NOT bonded together; their bonds are handled separately).">H–B distance <input id="hbt_hb_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="head↔body short-range repulsion. NEGATIVE for core repulsion.">H–B repulsion <input id="hbt_hb_repulsion" type="number" step="0.1" value="0"></label>
+    <label title="head↔body attractive well. NEGATIVE for attraction; (1+cos θ)/2 factor.">H–B attraction <input id="hbt_hb_attraction" type="number" step="0.1" value="0"></label>
+    <label title="head↔tail distance (cross-chain, never bonded).">H–T distance <input id="hbt_ht_distance" type="number" step="0.05" value="0.9"></label>
+    <label title="head↔tail short-range repulsion. NEGATIVE for core repulsion (keeps heads and tails on opposite sides of the shell).">H–T repulsion <input id="hbt_ht_repulsion" type="number" step="0.1" value="0"></label>
+    <label title="head↔tail attractive well. NEGATIVE for attraction; (1+cos θ)/2 factor.">H–T attraction <input id="hbt_ht_attraction" type="number" step="0.1" value="0"></label>
+    <label title="body↔tail distance (between blocks NOT bonded together).">B–T distance <input id="hbt_bt_distance" type="number" step="0.05" value="0.5"></label>
+    <label title="body↔tail short-range repulsion. NEGATIVE for core repulsion.">B–T repulsion <input id="hbt_bt_repulsion" type="number" step="0.1" value="0"></label>
+    <label title="body↔tail attractive well. NEGATIVE for attraction; (1+cos θ)/2 factor.">B–T attraction <input id="hbt_bt_attraction" type="number" step="0.1" value="0"></label>
     <hr>
   </div>
   <label title="Time-step multiplier. The base step is 0.04; this scales it. Higher = faster simulation but less stable.">dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
@@ -99,7 +122,7 @@ import {
   DEFAULTS, makeBlock, stepBlocks, refreshNormal,
   setupHeadTail, setupHeadBodyTail,
   randomQuat, randomPointInBall,
-} from './physics.mjs?v=6';
+} from './physics.mjs?v=7';
 
 // ---------------------------------------------------------------------------
 // Parameters: live state, mirrors the controls in #ui. Physics module reads
@@ -213,14 +236,19 @@ function rebuildBlocks() {
 }
 
 // Toggle the per-config UI sections so only the active one is visible.
-// head_body_tail re-uses every head_tail parameter, so it shows the same
-// section.
+// head_tail and head_body_tail share the bond_* params (.cfg-bonded);
+// each has its own pair-param section (.cfg-head_tail vs .cfg-hbt).
 function applyConfigVisibility() {
   const c = params.config;
+  const isBonded = (c === 'head_tail' || c === 'head_body_tail');
   for (const el of document.querySelectorAll('.cfg-sheet'))
     el.style.display = c === 'sheet' ? '' : 'none';
+  for (const el of document.querySelectorAll('.cfg-bonded'))
+    el.style.display = isBonded ? '' : 'none';
   for (const el of document.querySelectorAll('.cfg-head_tail'))
-    el.style.display = (c === 'head_tail' || c === 'head_body_tail') ? '' : 'none';
+    el.style.display = c === 'head_tail' ? '' : 'none';
+  for (const el of document.querySelectorAll('.cfg-hbt'))
+    el.style.display = c === 'head_body_tail' ? '' : 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -279,12 +307,19 @@ const URL_KEYS = [
   'nBlocks', 'sphereR', 'cutoff',
   // sheet
   'd_peak', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction', 'bend',
-  // head_tail
-  'bond_distance', 'bond_repulsion', 'bond_attraction',
+  // bond params (shared by head_tail and head_body_tail)
+  'bond_distance', 'bond_repulsion', 'bond_attraction', 'bond_alignment_torque',
+  // head_tail-only pair params
   'head_head_distance', 'head_head_repulsion', 'head_head_attraction',
   'tail_tail_distance', 'tail_tail_repulsion', 'tail_tail_attraction',
   'unbonded_ht_attraction',
-  'bond_alignment_torque',
+  // head_body_tail-only pair params (6 unbonded pair types)
+  'hbt_hh_distance', 'hbt_hh_repulsion', 'hbt_hh_attraction',
+  'hbt_bb_distance', 'hbt_bb_repulsion', 'hbt_bb_attraction',
+  'hbt_tt_distance', 'hbt_tt_repulsion', 'hbt_tt_attraction',
+  'hbt_hb_distance', 'hbt_hb_repulsion', 'hbt_hb_attraction',
+  'hbt_ht_distance', 'hbt_ht_repulsion', 'hbt_ht_attraction',
+  'hbt_bt_distance', 'hbt_bt_repulsion', 'hbt_bt_attraction',
   // shared
   'dtMul', 'damping', 'wallK', 'forceCap',
 ];
@@ -354,13 +389,16 @@ bindNumber('orthogonal_repulsion', 'orthogonal_repulsion');
 bindNumber('attraction',           'attraction');
 bindNumber('bend',                 'bend');
 
-// head_tail
+// bonded configs (head_tail and head_body_tail share these)
 bindNumber('bond_distance', 'bond_distance', () => {
-  if (params.config === 'head_tail')
+  if (params.config === 'head_tail' || params.config === 'head_body_tail')
     for (const b of blocks) b.mesh.scale.setScalar(params.bond_distance);
 });
 bindNumber('bond_repulsion',          'bond_repulsion');
 bindNumber('bond_attraction',         'bond_attraction');
+bindNumber('bond_alignment_torque',   'bond_alignment_torque');
+
+// head_tail-only
 bindNumber('head_head_distance',      'head_head_distance');
 bindNumber('head_head_repulsion',     'head_head_repulsion');
 bindNumber('head_head_attraction',    'head_head_attraction');
@@ -368,7 +406,14 @@ bindNumber('tail_tail_distance',      'tail_tail_distance');
 bindNumber('tail_tail_repulsion',     'tail_tail_repulsion');
 bindNumber('tail_tail_attraction',    'tail_tail_attraction');
 bindNumber('unbonded_ht_attraction',  'unbonded_ht_attraction');
-bindNumber('bond_alignment_torque',   'bond_alignment_torque');
+
+// head_body_tail-only — 6 pair types × (distance, repulsion, attraction)
+for (const pair of ['hh', 'bb', 'tt', 'hb', 'ht', 'bt']) {
+  for (const term of ['distance', 'repulsion', 'attraction']) {
+    const id = `hbt_${pair}_${term}`;
+    bindNumber(id, id);
+  }
+}
 
 // shared
 bindNumber('wallK', 'wallK');
