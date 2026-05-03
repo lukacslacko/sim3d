@@ -7,9 +7,13 @@
 export const DEFAULTS = {
   // Active block-type configuration. Selects which pair model + initial
   // typing/connectivity is used. See applyPair() for dispatch.
-  //   'sheet'      — original single-type model with orientation-rich affinity
-  //   'head_tail'  — two types (head, tail), each head bonded to exactly one tail
-  config: 'head_tail',
+  //   'sheet'           — single-type model with orientation-rich affinity
+  //   'head_tail'       — head bonded to exactly one tail (chain length 2)
+  //   'head_body_tail'  — three types in a chain head←body→tail (chain
+  //                       length 3); H and T behave like the head_tail
+  //                       'head', body behaves like the head_tail 'tail',
+  //                       and the head_tail params are re-used as-is.
+  config: 'head_body_tail',
 
   // ── shared parameters (apply to every config) ─────────────────────────
   sphereR: 9,
@@ -74,32 +78,81 @@ export function makeBlock(pos, quat, opts = {}) {
     force:  [0, 0, 0],
     torque: [0, 0, 0],
     normal: [0, 0, 0],
-    type:    opts.type ?? 0,           // head_tail config: 0 = head, 1 = tail. Ignored otherwise.
-    partner: opts.partner ?? null,     // head_tail: reference to bonded partner block (or null)
+    // Type ids per config:
+    //   head_tail:       0 = head, 1 = tail
+    //   head_body_tail:  0 = head, 1 = body, 2 = tail
+    type:       opts.type       ?? 0,
+    // Two bond slots, ordered so each bond is visited exactly once when
+    // iterating .bond_inner. For an unbonded block both are null.
+    //   bond_inner: the partner this block is the "outer" of
+    //   bond_outer: the partner this block is the "inner" of
+    // Chain head←body→tail in HBT:
+    //   head.bond_inner = body
+    //   body.bond_outer = head ; body.bond_inner = tail
+    //   tail.bond_outer = body
+    bond_inner: opts.bond_inner ?? null,
+    bond_outer: opts.bond_outer ?? null,
   };
 }
 
-// Set up the head_tail typing/connectivity on a freshly-created block array.
-// First half become heads, second half tails; head[i] bonded to tail[i].
-// Tails are nudged to start near their bonded head so the bond force has
-// a near-equilibrium starting point (otherwise an initial random placement
-// might leave a bond stretched across the whole sphere).
+// Set up head_tail typing/connectivity. First half → heads, second → tails;
+// head[i] bonded to tail[i]. Tails are nudged near their bonded head so the
+// bond force starts near equilibrium.
 export function setupHeadTail(blocks, p) {
   const N = blocks.length;
   const half = N >> 1;
   for (let i = 0; i < N; i++) {
     blocks[i].type = i < half ? 0 : 1;
-    blocks[i].partner = null;
+    blocks[i].bond_inner = null;
+    blocks[i].bond_outer = null;
   }
   const off = (p.bond_distance ?? 0.5);
   for (let i = 0; i < half; i++) {
     const head = blocks[i];
     const tail = blocks[half + i];
-    head.partner = tail;
-    tail.partner = head;
+    head.bond_inner = tail;
+    tail.bond_outer = head;
     tail.pos[0] = head.pos[0] + (Math.random() * 2 - 1) * off;
     tail.pos[1] = head.pos[1] + (Math.random() * 2 - 1) * off;
     tail.pos[2] = head.pos[2] + (Math.random() * 2 - 1) * off;
+  }
+}
+
+// Set up head_body_tail typing/connectivity. First third → heads, middle
+// third → bodies, last third → tails. head[i]–body[i]–tail[i] forms a
+// 3-block chain bonded twice. Body and tail are placed on a random axis
+// from the head at spacings ≈ bond_distance so each chain starts near
+// straight at near-equilibrium spacing.
+export function setupHeadBodyTail(blocks, p) {
+  const N = blocks.length;
+  const third = (N / 3) | 0;
+  for (let i = 0; i < N; i++) {
+    blocks[i].type = i < third ? 0 : (i < 2 * third ? 1 : 2);
+    blocks[i].bond_inner = null;
+    blocks[i].bond_outer = null;
+  }
+  const off = (p.bond_distance ?? 0.4);
+  for (let i = 0; i < third; i++) {
+    const head = blocks[i];
+    const body = blocks[third + i];
+    const tail = blocks[2 * third + i];
+    head.bond_inner = body;
+    body.bond_outer = head;
+    body.bond_inner = tail;
+    tail.bond_outer = body;
+
+    // Random unit axis; body sits 1·off back from head, tail another 1·off.
+    let dx = Math.random() * 2 - 1;
+    let dy = Math.random() * 2 - 1;
+    let dz = Math.random() * 2 - 1;
+    const norm = Math.hypot(dx, dy, dz) || 1;
+    dx /= norm; dy /= norm; dz /= norm;
+    body.pos[0] = head.pos[0] - dx * off;
+    body.pos[1] = head.pos[1] - dy * off;
+    body.pos[2] = head.pos[2] - dz * off;
+    tail.pos[0] = body.pos[0] - dx * off;
+    tail.pos[1] = body.pos[1] - dy * off;
+    tail.pos[2] = body.pos[2] - dz * off;
   }
 }
 
@@ -247,7 +300,8 @@ export function pairAffinityGrad(d, cA, cB, p) {
 
 // Pair force/torque dispatch — selects the per-config implementation.
 export function applyPair(a, b, p) {
-  if (p.config === 'head_tail') return applyPairHeadTail(a, b, p);
+  if (p.config === 'head_body_tail') return applyPairHeadBodyTail(a, b, p);
+  if (p.config === 'head_tail')      return applyPairHeadTail(a, b, p);
   return applyPairSheet(a, b, p);
 }
 
@@ -309,53 +363,54 @@ function applyPairSheet(a, b, p) {
 // head_tail config — pair forces and bond force/torque.
 // ---------------------------------------------------------------------------
 
-// Bonded H–T pair: applied unconditionally (no cutoff) so the bond is never
-// "lost" by separation. Pure radial "want distance bond_distance" force
-// (-bond_repulsion/d + bond_attraction·W), plus an alignment torque
-// pulling each block's direction toward bond_dir = (head.pos − tail.pos)/d.
-function applyBondPair(head, tail, p) {
-  const rx = head.pos[0] - tail.pos[0];
-  const ry = head.pos[1] - tail.pos[1];
-  const rz = head.pos[2] - tail.pos[2];
+// Bond force/torque: applied unconditionally (no cutoff) so a bond never
+// gets "lost" by separation. Pure radial "want distance bond_distance" force
+// (-bond_repulsion/d + bond_attraction·W), plus an alignment torque pulling
+// each block's direction toward bond_dir = (outer.pos − inner.pos)/d.
+//
+// Used by both head_tail (one bond per chain) and head_body_tail (two bonds
+// per chain — head←body and body←tail; both use the same shared bond_*
+// parameters and both align block.direction with their bond_dir, which is
+// consistent because the chain is colinear at equilibrium).
+function applyBondForce(outer, inner, p) {
+  const rx = outer.pos[0] - inner.pos[0];
+  const ry = outer.pos[1] - inner.pos[1];
+  const rz = outer.pos[2] - inner.pos[2];
   const d2 = rx*rx + ry*ry + rz*rz;
   if (d2 < 1e-8) {
-    // Degenerate overlap — random kick to break symmetry, no torque.
     const k = 5;
     const px = Math.random()-0.5, py = Math.random()-0.5, pz = Math.random()-0.5;
-    head.force[0] += px*k; head.force[1] += py*k; head.force[2] += pz*k;
-    tail.force[0] -= px*k; tail.force[1] -= py*k; tail.force[2] -= pz*k;
+    outer.force[0] += px*k; outer.force[1] += py*k; outer.force[2] += pz*k;
+    inner.force[0] -= px*k; inner.force[1] -= py*k; inner.force[2] -= pz*k;
     return;
   }
   const d = Math.sqrt(d2);
   const inv_d = 1 / d;
-  const bx = rx * inv_d, by = ry * inv_d, bz = rz * inv_d;  // bond_dir = T → H
+  const bx = rx * inv_d, by = ry * inv_d, bz = rz * inv_d;  // bond_dir = inner → outer
 
-  // Radial: U = -rep/d + att / (1 + (d-bond_distance)²)
   const da = d - p.bond_distance;
   const W  = 1 / (1 + da * da);
   const dU_dd = p.bond_repulsion / d2 - 2 * da * p.bond_attraction * W * W;
-  // Force on head along +bond_dir (which equals rhat from tail to head).
   const fmag = -dU_dd;
-  head.force[0] += fmag * bx;
-  head.force[1] += fmag * by;
-  head.force[2] += fmag * bz;
-  tail.force[0] -= fmag * bx;
-  tail.force[1] -= fmag * by;
-  tail.force[2] -= fmag * bz;
+  outer.force[0] += fmag * bx;
+  outer.force[1] += fmag * by;
+  outer.force[2] += fmag * bz;
+  inner.force[0] -= fmag * bx;
+  inner.force[1] -= fmag * by;
+  inner.force[2] -= fmag * bz;
 
   // Alignment torque on each block: τ = bond_alignment_torque · (n × bond_dir).
-  // Parallel n with bond_dir is stable; antiparallel is unstable (small
-  // perturbation analysis verified by ε-expansion).
+  // Parallel n with bond_dir is the stable equilibrium.
   const ak = p.bond_alignment_torque;
   if (ak !== 0) {
-    const nh = head.normal;
-    head.torque[0] += ak * (nh[1]*bz - nh[2]*by);
-    head.torque[1] += ak * (nh[2]*bx - nh[0]*bz);
-    head.torque[2] += ak * (nh[0]*by - nh[1]*bx);
-    const nt = tail.normal;
-    tail.torque[0] += ak * (nt[1]*bz - nt[2]*by);
-    tail.torque[1] += ak * (nt[2]*bx - nt[0]*bz);
-    tail.torque[2] += ak * (nt[0]*by - nt[1]*bx);
+    const no = outer.normal;
+    outer.torque[0] += ak * (no[1]*bz - no[2]*by);
+    outer.torque[1] += ak * (no[2]*bx - no[0]*bz);
+    outer.torque[2] += ak * (no[0]*by - no[1]*bx);
+    const ni = inner.normal;
+    inner.torque[0] += ak * (ni[1]*bz - ni[2]*by);
+    inner.torque[1] += ak * (ni[2]*bx - ni[0]*bz);
+    inner.torque[2] += ak * (ni[0]*by - ni[1]*bx);
   }
 }
 
@@ -367,10 +422,11 @@ function applyBondPair(head, tail, p) {
 //   • H–T not bonded: pure -unbonded_ht_attraction/d affinity (no equilibrium,
 //     no cos factor, no torque).
 // Bonded H–T pairs reach this function via the spatial hash too — we early-
-// reject them so their force is only applied via applyBondPair (no double-
+// reject them so their force is only applied via applyBondForce (no double-
 // counting).
 function applyPairHeadTail(a, b, p) {
-  if (a.partner === b) return 0;       // bonded — handled separately
+  // Bonded? Handled separately by applyBondForce in stepBlocks.
+  if (a.bond_inner === b || a.bond_outer === b) return 0;
 
   const rx = b.pos[0] - a.pos[0];
   const ry = b.pos[1] - a.pos[1];
@@ -401,6 +457,67 @@ function applyPairHeadTail(a, b, p) {
     const want_att = a.type === 0 ? p.head_head_attraction : p.tail_tail_attraction;
     const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
     const cf = (1 + alpha) * 0.5;        // (1 + cos θ) / 2
+    const da = d - want_a;
+    const W  = 1 / (1 + da * da);
+    U0     = -want_rep * inv_d + cf * want_att * W;
+    dU0_dd =  want_rep * inv_d * inv_d - 2 * da * cf * want_att * W * W;
+  }
+
+  const dU_dd = m * dU0_dd + dm * U0;
+  const fmag = -dU_dd;
+  const fx = fmag * rx * inv_d;
+  const fy = fmag * ry * inv_d;
+  const fz = fmag * rz * inv_d;
+  a.force[0] -= fx; a.force[1] -= fy; a.force[2] -= fz;
+  b.force[0] += fx; b.force[1] += fy; b.force[2] += fz;
+  return 1;
+}
+
+// Non-bonded pair in head_body_tail config. Same structure as
+// applyPairHeadTail but with a 3-type dispatch:
+//   • body↔body  → tail_tail_* with (1+cos θ)/2 attraction factor
+//   • two ends (head/tail in any combination — the user spec calls heads
+//     and tails "act like 'heads' in the previous head_tail config", so
+//     H↔H, H↔T, T↔T all share head_head_*) → head_head_* with cos factor
+//   • cross-type ends↔body that aren't bonded → −unbonded_ht_attraction/d
+// Bonded pairs (head↔body or body↔tail in the same chain) are skipped here
+// and handled by applyBondForce.
+function applyPairHeadBodyTail(a, b, p) {
+  if (a.bond_inner === b || a.bond_outer === b) return 0;
+
+  const rx = b.pos[0] - a.pos[0];
+  const ry = b.pos[1] - a.pos[1];
+  const rz = b.pos[2] - a.pos[2];
+  const d2 = rx*rx + ry*ry + rz*rz;
+  if (d2 > p.cutoff * p.cutoff) return 0;
+  if (d2 < 1e-8) {
+    const k = 5;
+    const px = Math.random()-0.5, py = Math.random()-0.5, pz = Math.random()-0.5;
+    a.force[0] -= px*k; a.force[1] -= py*k; a.force[2] -= pz*k;
+    b.force[0] += px*k; b.force[1] += py*k; b.force[2] += pz*k;
+    return 1;
+  }
+  const d = Math.sqrt(d2);
+  const inv_d = 1 / d;
+  const m  = smoothMask(d, p.cutoff);
+  if (m === 0) return 1;
+  const dm = smoothMaskDeriv(d, p.cutoff);
+
+  const aIsBody = a.type === 1, bIsBody = b.type === 1;
+
+  let U0, dU0_dd;
+  if (aIsBody !== bIsBody) {
+    // Cross: end ↔ body (not bonded — bonded ones early-returned above).
+    // Pure -k/d affinity, no equilibrium, no cos factor.
+    U0     = -p.unbonded_ht_attraction * inv_d;
+    dU0_dd =  p.unbonded_ht_attraction * inv_d * inv_d;
+  } else {
+    // Same group: both body, or both ends (any combo of H/T).
+    const want_a   = aIsBody ? p.tail_tail_distance   : p.head_head_distance;
+    const want_rep = aIsBody ? p.tail_tail_repulsion  : p.head_head_repulsion;
+    const want_att = aIsBody ? p.tail_tail_attraction : p.head_head_attraction;
+    const alpha = a.normal[0]*b.normal[0] + a.normal[1]*b.normal[1] + a.normal[2]*b.normal[2];
+    const cf = (1 + alpha) * 0.5;
     const da = d - want_a;
     const W  = 1 / (1 + da * da);
     U0     = -want_rep * inv_d + cf * want_att * W;
@@ -460,12 +577,14 @@ export function stepBlocks(blocks, dt, p) {
     refreshNormal(b);
   }
 
-  // head_tail config: apply bond force/torque first (unconditional, no cutoff).
-  // Iterate via heads only — each bond is visited exactly once.
-  if (p.config === 'head_tail') {
+  // Bond force/torque: applied unconditionally (no cutoff). Each bond is
+  // stored as outer.bond_inner = inner, so iterating bond_inner over every
+  // block hits each bond exactly once for either head_tail (1 bond/chain)
+  // or head_body_tail (2 bonds/chain).
+  if (p.config === 'head_tail' || p.config === 'head_body_tail') {
     for (let i = 0; i < blocks.length; i++) {
-      const h = blocks[i];
-      if (h.type === 0 && h.partner !== null) applyBondPair(h, h.partner, p);
+      const b = blocks[i];
+      if (b.bond_inner !== null) applyBondForce(b, b.bond_inner, p);
     }
   }
 
