@@ -529,7 +529,18 @@ function applyPairHeadBodyTail(a, b, p) {
   switch (tlo * 3 + thi) {
     case 0: want_a = p.hbt_hh_distance; want_rep = p.hbt_hh_repulsion; want_att = p.hbt_hh_attraction; break;
     case 1: want_a = p.hbt_hb_distance; want_rep = p.hbt_hb_repulsion; want_att = p.hbt_hb_attraction; break;
-    case 2: want_a = p.hbt_ht_distance; want_rep = p.hbt_ht_repulsion; want_att = p.hbt_ht_attraction; break;
+    case 2: {
+      // Head↔tail interaction is restricted to the *same* chain — heads
+      // and tails in different molecules don't feel each other (avoids
+      // cross-shell coupling that wouldn't make physical sense for chains
+      // tethered through their own body). The chain link: head's body
+      // (head.bond_inner) is the same Block as tail's body (tail.bond_outer).
+      const head = a.type === 0 ? a : b;
+      const tail = a.type === 2 ? a : b;
+      if (head.bond_inner === null || head.bond_inner !== tail.bond_outer) return 0;
+      want_a = p.hbt_ht_distance; want_rep = p.hbt_ht_repulsion; want_att = p.hbt_ht_attraction;
+      break;
+    }
     case 4: want_a = p.hbt_bb_distance; want_rep = p.hbt_bb_repulsion; want_att = p.hbt_bb_attraction; break;
     case 5: want_a = p.hbt_bt_distance; want_rep = p.hbt_bt_repulsion; want_att = p.hbt_bt_attraction; break;
     default: want_a = p.hbt_tt_distance; want_rep = p.hbt_tt_repulsion; want_att = p.hbt_tt_attraction; break;
