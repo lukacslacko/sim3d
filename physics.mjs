@@ -87,11 +87,11 @@ export const DEFAULTS = {
   // by applyBondForce instead. Defaults below preserve the prior collapsed
   // behavior (BB-only attraction; HH soft repulsion; everything else off).
   hbt_hh_distance: 0.8, hbt_hh_repulsion: -0.1, hbt_hh_attraction: -0.3,
-  hbt_bb_distance: 1.0, hbt_bb_repulsion: -0.1, hbt_bb_attraction: -0.3,
+  hbt_bb_distance: 0.8, hbt_bb_repulsion:  0.0, hbt_bb_attraction: -0.7,
   hbt_tt_distance: 0.8, hbt_tt_repulsion: -0.1, hbt_tt_attraction: -0.3,
-  hbt_hb_distance: 0.5, hbt_hb_repulsion:  0.0, hbt_hb_attraction:  0.0,
+  hbt_hb_distance: 0.5, hbt_hb_repulsion: -0.2, hbt_hb_attraction:  0.0,
   hbt_ht_distance: 0.9, hbt_ht_repulsion: -3.0, hbt_ht_attraction:  0.0,
-  hbt_bt_distance: 0.5, hbt_bt_repulsion:  0.0, hbt_bt_attraction:  0.0,
+  hbt_bt_distance: 0.5, hbt_bt_repulsion: -0.2, hbt_bt_attraction:  0.0,
 };
 
 export function makeBlock(pos, quat, opts = {}) {
