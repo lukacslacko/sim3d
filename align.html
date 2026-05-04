@@ -41,7 +41,7 @@
 
 <div id="ui">
   <h1>SIM3D — alignment</h1>
-  <label title="Grid resolution per axis. The lattice is N×N×N coordinate frames inside the periodic cube. Cost scales as N³ for the alignment step (massively cheaper on GPU) and as N³ for the direction histogram (constant time per cell after the LUT). Refine doubles N and copies each old cell to a 2×2×2 block of new ones, so the simulation continues from the (now-finer) field instead of restarting from random.">N <input id="N" type="number" min="2" max="64" step="1" value="16"><button id="refineBtn" style="margin-left:6px;padding:1px 6px;">refine ×2</button></label>
+  <label title="Grid resolution per axis. The lattice is N×N×N coordinate frames inside the periodic cube. Cost scales as N³ for the alignment step (massively cheaper on GPU) and as N³ for the direction histogram (constant time per cell after the LUT). Refine doubles N and copies each old cell to a 2×2×2 block of new ones, so the simulation continues from the (now-finer) field instead of restarting from random.">N <input id="N" type="number" min="2" max="128" step="1" value="16"><button id="refineBtn" style="margin-left:6px;padding:1px 6px;">refine ×2</button></label>
   <label title="Run the alignment iteration on the GPU as a ping-pong fragment-shader pass. CPU stepAlign is the bottleneck at large N (≈13 ms/step at N=40); the GPU version is typically 1–2 orders of magnitude faster, with one readPixels per frame to feed the visualization. Falls back to CPU automatically on WebGL1.">GPU compute <input type="checkbox" id="useGPU" checked></label>
   <label title="Edge length of the periodic cube. Frames are placed on a regular grid with spacing cubeSize/N; the boundary wraps so neighbors of an edge cell are on the opposite face.">cube size <input id="cubeSize" type="number" min="2" max="100" step="1" value="18"></label>
   <hr>
@@ -57,6 +57,10 @@
   <label class="mode-voxel" title="Voxel size as a fraction of the grid spacing. 1.0 = voxels touch their neighbors (no gaps); smaller = isolated cubes with visible spacing.">voxel size <input id="voxelScale" type="range" min="0.1" max="1.0" step="0.05" value="1.0"></label>
   <label class="mode-voxel" title="Misalignment value that maps to 'fully saturated' on the alpha curve. In heat mode this is the value that becomes fully bright red and fully opaque; in domains mode it's the value at which a cell becomes fully transparent.">color cap <input id="misalignCap" type="range" min="0.05" max="1.0" step="0.05" value="0.5"></label>
   <label class="mode-voxel" title="Transparency curve exponent.&#10;heat mode:    alpha = t^γ          (t = misalignment / cap; γ>1 = only severe defects show)&#10;domains mode: alpha = (1−t)^γ      (γ>1 = only nearly-perfect aligned regions show)">α gamma <input id="alphaGamma" type="range" min="0.2" max="5.0" step="0.1" value="1.0"></label>
+  <hr>
+  <label title="Trace streamlines starting from a regular grid on the cube's −Z face, stepping along each cell's local +Z direction, until they exit any cube face. Always rendered on top of the voxel mesh so they overlay any render mode (heat, domains, axes).">paths <input type="checkbox" id="showPaths"></label>
+  <label class="paths-on" title="Number of streamline seeds along each axis on the seeding face. Total streamlines = seeds².">seeds/side <input id="pathSeeds" type="range" min="2" max="20" step="1" value="10"></label>
+  <label class="paths-on" title="Streamline integration step as a fraction of the grid spacing. Smaller = smoother curves, more vertices, slightly more CPU; larger = chunkier but cheaper.">step size <input id="pathStepFrac" type="range" min="0.25" max="1.0" step="0.05" value="0.5"></label>
   <label title="How many alignment steps to run between renders. 1 = step every frame; higher values let you watch fast convergence in real time.">steps/frame <input id="stepsPerFrame" type="number" min="1" max="50" step="1" value="1"></label>
   <div class="row">
     <button id="resetBtn">reset</button>
@@ -111,6 +115,10 @@ const params = {
   // fragment shader). Enabled by default; falls back to CPU automatically
   // if the renderer is WebGL1.
   useGPU: true,
+  // Streamline overlay (independent of render mode).
+  showPaths: false,
+  pathSeeds: 10,
+  pathStepFrac: 0.5,
 };
 
 let scene, camera, renderer, controls, cubeMesh;
@@ -118,6 +126,17 @@ let lines, lineGeom, linePos, lineCol;
 let voxelMesh, voxelMisalignBuf, voxelAlphaBuf;
 let state, axesBuf, dirsBuf, hist;
 let gpuAligner = null;
+// Streamline overlay: a single LineSegments mesh, allocated oversized once
+// at startup (fixed-cap buffers; drawRange limits per-frame). Each segment
+// is one integration step; positions and colors rewritten per frame.
+let pathLines, pathGeom, pathPos, pathCol;
+const _pathColor = new THREE.Color();
+const PATH_MAX_SEEDS = 20;                                   // matches UI slider max
+const PATH_MAX_STREAMS = PATH_MAX_SEEDS * PATH_MAX_SEEDS;    // 400
+const PATH_MAX_STEPS = 1024;                                 // safe for N≤128, stepFrac≥0.25
+// Reusable scratch for trilinear interpolation (8 corner directions × 3 floats),
+// allocated once so updatePaths' inner loop doesn't churn the GC.
+const _cornerDirs = new Float32Array(24);
 let paused = false;
 const _voxelMatrix = new THREE.Matrix4();
 const _voxelColor = new THREE.Color();
@@ -275,6 +294,216 @@ function tryEnableGPU() {
   gpuAligner.upload(state.quats);
 }
 
+// Build the streamline overlay mesh once at startup. Buffers are sized for
+// the worst case (PATH_MAX_STREAMS · PATH_MAX_STEPS · 2 vertices) so we
+// don't reallocate when seed-count or N changes; setDrawRange caps the
+// active vertex count each frame. depthTest off so streamlines stay
+// visible through opaque voxels — they're an overlay, not in-scene.
+function buildPaths() {
+  const maxVerts = PATH_MAX_STREAMS * PATH_MAX_STEPS * 2;
+  pathPos = new Float32Array(maxVerts * 3);
+  pathCol = new Float32Array(maxVerts * 3);
+  pathGeom = new THREE.BufferGeometry();
+  pathGeom.setAttribute('position', new THREE.BufferAttribute(pathPos, 3));
+  pathGeom.setAttribute('color',    new THREE.BufferAttribute(pathCol, 3));
+  pathGeom.setDrawRange(0, 0);
+  pathLines = new THREE.LineSegments(pathGeom, new THREE.LineBasicMaterial({
+    vertexColors: true,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+  }));
+  pathLines.frustumCulled = false;
+  pathLines.renderOrder = 999;       // drawn after voxels
+  pathLines.visible = params.showPaths;
+  scene.add(pathLines);
+}
+
+// Re-trace every streamline. Each one starts on the LOGICAL −Z face (iz=0
+// layer in unshifted grid coords) on a regular grid, then takes Euler
+// steps along the local +Z axis. The integration runs in unshifted
+// coordinates and terminates when it leaves the cube on any face. For
+// RENDERING, each vertex gets the same offset+wrap as the cells
+// (params.offsetCells), so when you shift the cube with x/y/z the
+// streamlines shift with it. A segment whose two endpoints land on
+// opposite sides of the cube after wrap is dropped — the streamline
+// visibly breaks at the wrap boundary rather than stretching across the
+// box.
+//
+// The local direction is TRILINEARLY INTERPOLATED from the 8 cell-centered
+// surrounding samples (clamped to the cube; no PBC for interpolation, so
+// near-face streamlines aren't contaminated by cells from the opposite
+// side). Each cell's frame is treated as an unsigned axis — each corner's
+// +Z is sign-fixed to dz≥0 before blending so the 8 samples form a
+// coherent line-field rather than cancelling each other in the average.
+// The blended direction is renormalized and re-sign-fixed so streamlines
+// from −Z always march toward +Z.
+//
+// Without interpolation the path would jump abruptly every time it crossed
+// a cell boundary; with it the path is C0-continuous across cell faces.
+//
+// Color per segment uses the same HSL-from-direction mapping as the
+// domains voxel mode, so streamlines passing through an aligned domain
+// take that domain's color.
+function updatePaths() {
+  if (!pathLines) return;
+  if (!params.showPaths) { pathLines.visible = false; return; }
+  pathLines.visible = true;
+
+  const N = params.N;
+  const L = params.cubeSize;
+  const half = 0.5 * L;
+  const s = L / N;
+  const inv_s = 1 / s;
+  const stepSize = s * params.pathStepFrac;
+  const seeds = Math.min(PATH_MAX_SEEDS, params.pathSeeds | 0);
+  const cap = pathPos.length;
+  const TWO_PI_INV = 1 / (2 * Math.PI);
+  // Per-axis render offset in world units, matching fillAxesGeometry and
+  // updateVoxelTransforms.
+  const offX = params.offsetCells[0] * s;
+  const offY = params.offsetCells[1] * s;
+  const offZ = params.offsetCells[2] * s;
+  // Threshold for "this segment crossed a wrap boundary": with stepSize ≪
+  // half, any post-wrap step bigger than half a cube must come from a wrap.
+  const wrapJump = half;
+
+  let outIdx = 0;
+  for (let a = 0; a < seeds && outIdx < cap; a++) {
+    for (let b = 0; b < seeds && outIdx < cap; b++) {
+      // Seed a half-step inside the LOGICAL −Z face on a regular grid.
+      let px = -half + (a + 0.5) * (L / seeds);
+      let py = -half + (b + 0.5) * (L / seeds);
+      let pz = -half + 1e-4;
+      // Initial render position = (logical + offset) wrapped to [-L/2, L/2).
+      let rxPrev = (px + offX) - L * Math.floor((px + offX + half) / L);
+      let ryPrev = (py + offY) - L * Math.floor((py + offY + half) / L);
+      let rzPrev = (pz + offZ) - L * Math.floor((pz + offZ + half) / L);
+      for (let step = 0; step < PATH_MAX_STEPS; step++) {
+        // Position-based exit: streamline terminates as soon as it leaves
+        // the cube along any axis.
+        if (px < -half || px >= half ||
+            py < -half || py >= half ||
+            pz < -half || pz >= half) break;
+
+        // Cell-centered float coords. Cells centered at integer fx/fy/fz;
+        // boundaries at half-integers. fx/fy/fz ∈ [-0.5, N-0.5).
+        const fx = (px + half) * inv_s - 0.5;
+        const fy = (py + half) * inv_s - 0.5;
+        const fz = (pz + half) * inv_s - 0.5;
+        const ix0 = Math.floor(fx);
+        const iy0 = Math.floor(fy);
+        const iz0 = Math.floor(fz);
+        const tx = fx - ix0;
+        const ty = fy - iy0;
+        const tz = fz - iz0;
+
+        // Sample the 8 surrounding cells. Clamp to grid range (no PBC for
+        // interpolation): a streamline near the −Z face uses only −Z-side
+        // cells, instead of being half-pulled toward the +Z face's wrap.
+        // Each corner direction is sign-fixed to dz≥0 so the line-field
+        // averages coherently in the trilinear blend.
+        for (let kz = 0; kz <= 1; kz++) {
+          let ciz = iz0 + kz;
+          if (ciz < 0) ciz = 0; else if (ciz >= N) ciz = N - 1;
+          for (let ky = 0; ky <= 1; ky++) {
+            let ciy = iy0 + ky;
+            if (ciy < 0) ciy = 0; else if (ciy >= N) ciy = N - 1;
+            for (let kx = 0; kx <= 1; kx++) {
+              let cix = ix0 + kx;
+              if (cix < 0) cix = 0; else if (cix >= N) cix = N - 1;
+              const cci = (ciz * N + ciy) * N + cix;
+              const qx = state.quats[4*cci    ];
+              const qy = state.quats[4*cci + 1];
+              const qz = state.quats[4*cci + 2];
+              const qw = state.quats[4*cci + 3];
+              let cdx = 2*(qx*qz + qy*qw);
+              let cdy = 2*(qy*qz - qx*qw);
+              let cdz = 1 - 2*(qx*qx + qy*qy);
+              if (cdz < 0) { cdx = -cdx; cdy = -cdy; cdz = -cdz; }
+              const ci2 = (kz*4 + ky*2 + kx) * 3;
+              _cornerDirs[ci2    ] = cdx;
+              _cornerDirs[ci2 + 1] = cdy;
+              _cornerDirs[ci2 + 2] = cdz;
+            }
+          }
+        }
+
+        // Trilinear weights.
+        const w000 = (1-tx)*(1-ty)*(1-tz);
+        const w100 = tx    *(1-ty)*(1-tz);
+        const w010 = (1-tx)*ty    *(1-tz);
+        const w110 = tx    *ty    *(1-tz);
+        const w001 = (1-tx)*(1-ty)*tz;
+        const w101 = tx    *(1-ty)*tz;
+        const w011 = (1-tx)*ty    *tz;
+        const w111 = tx    *ty    *tz;
+
+        // Blend.
+        let dx = w000*_cornerDirs[ 0] + w100*_cornerDirs[ 3]
+               + w010*_cornerDirs[ 6] + w110*_cornerDirs[ 9]
+               + w001*_cornerDirs[12] + w101*_cornerDirs[15]
+               + w011*_cornerDirs[18] + w111*_cornerDirs[21];
+        let dy = w000*_cornerDirs[ 1] + w100*_cornerDirs[ 4]
+               + w010*_cornerDirs[ 7] + w110*_cornerDirs[10]
+               + w001*_cornerDirs[13] + w101*_cornerDirs[16]
+               + w011*_cornerDirs[19] + w111*_cornerDirs[22];
+        let dz = w000*_cornerDirs[ 2] + w100*_cornerDirs[ 5]
+               + w010*_cornerDirs[ 8] + w110*_cornerDirs[11]
+               + w001*_cornerDirs[14] + w101*_cornerDirs[17]
+               + w011*_cornerDirs[20] + w111*_cornerDirs[23];
+
+        // Normalize. Fall back to +Z if the 8 corners cancel — happens only
+        // if the local field is genuinely undefined (rare, e.g. at a defect).
+        const len = Math.hypot(dx, dy, dz);
+        if (len > 1e-8) { dx /= len; dy /= len; dz /= len; }
+        else { dx = 0; dy = 0; dz = 1; }
+        // Final sign-fix: the per-corner sign-fix doesn't guarantee dz≥0 of
+        // the blend (a corner with dz≈0 can swing the result negative).
+        if (dz < 0) { dx = -dx; dy = -dy; dz = -dz; }
+
+        const nx = px + dx * stepSize;
+        const ny = py + dy * stepSize;
+        const nz = pz + dz * stepSize;
+        // Render position of the new endpoint, with offset+wrap.
+        const rxNext = (nx + offX) - L * Math.floor((nx + offX + half) / L);
+        const ryNext = (ny + offY) - L * Math.floor((ny + offY + half) / L);
+        const rzNext = (nz + offZ) - L * Math.floor((nz + offZ + half) / L);
+        // Drop the segment if it crossed a wrap boundary (its two endpoints
+        // landed on opposite sides). Otherwise emit it.
+        const wrapped =
+          Math.abs(rxNext - rxPrev) > wrapJump ||
+          Math.abs(ryNext - ryPrev) > wrapJump ||
+          Math.abs(rzNext - rzPrev) > wrapJump;
+        if (!wrapped && outIdx + 6 <= cap) {
+          pathPos[outIdx    ] = rxPrev; pathPos[outIdx + 1] = ryPrev; pathPos[outIdx + 2] = rzPrev;
+          pathPos[outIdx + 3] = rxNext; pathPos[outIdx + 4] = ryNext; pathPos[outIdx + 5] = rzNext;
+          let hue = Math.atan2(dy, dx) * TWO_PI_INV;
+          if (hue < 0) hue += 1;
+          const sat = Math.sqrt(dx*dx + dy*dy);
+          const lum = 0.55 + 0.20 * dz;
+          _pathColor.setHSL(hue, sat, lum);
+          const r = _pathColor.r, gn = _pathColor.g, bl = _pathColor.b;
+          pathCol[outIdx    ] = r; pathCol[outIdx + 1] = gn; pathCol[outIdx + 2] = bl;
+          pathCol[outIdx + 3] = r; pathCol[outIdx + 4] = gn; pathCol[outIdx + 5] = bl;
+          outIdx += 6;
+        }
+        px = nx; py = ny; pz = nz;
+        rxPrev = rxNext; ryPrev = ryNext; rzPrev = rzNext;
+      }
+    }
+  }
+  pathGeom.setDrawRange(0, outIdx / 3);
+  pathGeom.attributes.position.needsUpdate = true;
+  pathGeom.attributes.color.needsUpdate = true;
+}
+
+// UI visibility for the "paths-on" labels (seeds slider, step-size slider).
+function applyPathsUI() {
+  for (const el of document.querySelectorAll('.paths-on'))
+    el.style.display = params.showPaths ? '' : 'none';
+}
+
 // Set each voxel's per-instance matrix to scale·translate. Cheap (one matrix
 // per cell) so safe to call from a slider's input event whenever voxelScale
 // or the grid spacing changes.
@@ -395,6 +624,7 @@ function animate() {
   } else {
     updateVoxelColors();
   }
+  updatePaths();
   hist.update(dirsBuf, params.N * params.N * params.N);
   hist.syncCamera(camera);
   controls.update();
@@ -431,6 +661,7 @@ addEventListener('resize', () => {
 buildScene();
 rebuildCube();
 rebuildGrid();
+buildPaths();
 hist = createDirectionHistogram(document.getElementById('histCanvas'));
 
 // UI bindings. `change` (vs `input`) lets us cheap-update params on every
@@ -459,6 +690,16 @@ bindRange('axisLen', 'axisLen');
 bindRange('voxelScale', 'voxelScale');
 bindRange('misalignCap', 'misalignCap');
 bindRange('alphaGamma', 'alphaGamma');
+bindRange('pathSeeds', 'pathSeeds');
+bindRange('pathStepFrac', 'pathStepFrac');
+
+const showPathsEl = document.getElementById('showPaths');
+showPathsEl.checked = params.showPaths;
+showPathsEl.addEventListener('change', () => {
+  params.showPaths = showPathsEl.checked;
+  applyPathsUI();
+});
+applyPathsUI();
 
 // voxelScale needs to push the new size into every instance matrix; the
 // other range bindings just twiddle params consumed by per-frame updates.
@@ -505,7 +746,7 @@ useGPUEl.addEventListener('change', () => {
 document.getElementById('refineBtn').onclick = () => {
   const oldN = params.N;
   const newN = oldN * 2;
-  if (newN > 64) return;     // texture cap: 64² = 4096 = guaranteed WebGL min
+  if (newN > 128) return;     // matches the N input's max
   // Snapshot before rebuildGrid (which re-allocates state.quats).
   const oldQuats = new Float32Array(state.quats);
   params.N = newN;
