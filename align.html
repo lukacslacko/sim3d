@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>sim3d — orientation alignment</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0d12; color: #cfd6e0;
+    font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+  #ui { position: fixed; top: 10px; left: 10px; padding: 10px 12px;
+    background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 6px;
+    backdrop-filter: blur(6px); min-width: 240px; max-height: calc(100vh - 310px);
+    overflow-y: auto; }
+  #ui h1 { font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; color: #9ad8ff; }
+  #ui label { display: flex; justify-content: space-between; gap: 8px;
+    align-items: center; margin: 4px 0; }
+  #ui input[type=range] { width: 110px; }
+  #ui input[type=number] { width: 70px; background: #1a222d; color: #cfd6e0;
+    border: 1px solid #2a3543; border-radius: 3px; padding: 1px 4px; }
+  #ui button { background: #1f2a36; color: #cfd6e0; border: 1px solid #2a3543;
+    padding: 4px 9px; border-radius: 4px; cursor: pointer; margin-right: 4px; }
+  #ui button:hover { background: #283544; }
+  #ui .row { margin-top: 6px; }
+  #ui hr { border: none; border-top: 1px solid #25303d; margin: 7px 0; }
+  #histPanel { position: fixed; left: 10px; bottom: 40px; width: 240px;
+    padding: 8px 10px; background: rgba(15,20,28,0.78);
+    border: 1px solid #25303d; border-radius: 6px; backdrop-filter: blur(6px);
+    display: flex; flex-direction: column; }
+  #histPanel h2 { font-size: 11px; margin: 0 0 6px; color: #9ad8ff;
+    letter-spacing: .04em; font-weight: normal; }
+  #histCanvas { display: block; width: 220px; height: 220px; background: transparent; }
+  #stats { position: fixed; bottom: 10px; left: 10px; padding: 6px 9px;
+    background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 4px;
+    font-variant-numeric: tabular-nums; }
+  #help { position: fixed; bottom: 10px; right: 10px; padding: 6px 9px;
+    background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 4px;
+    color: #7a8696; }
+  #help a { color: #9ad8ff; text-decoration: none; margin-right: 10px; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <h1>SIM3D — alignment</h1>
+  <label title="Grid resolution per axis. The lattice is N×N×N coordinate frames inside the periodic cube. Cost scales as N³ for the alignment step (massively cheaper on GPU) and as N³ for the direction histogram (constant time per cell after the LUT). Refine doubles N and copies each old cell to a 2×2×2 block of new ones, so the simulation continues from the (now-finer) field instead of restarting from random.">N <input id="N" type="number" min="2" max="64" step="1" value="16"><button id="refineBtn" style="margin-left:6px;padding:1px 6px;">refine ×2</button></label>
+  <label title="Run the alignment iteration on the GPU as a ping-pong fragment-shader pass. CPU stepAlign is the bottleneck at large N (≈13 ms/step at N=40); the GPU version is typically 1–2 orders of magnitude faster, with one readPixels per frame to feed the visualization. Falls back to CPU automatically on WebGL1.">GPU compute <input type="checkbox" id="useGPU" checked></label>
+  <label title="Edge length of the periodic cube. Frames are placed on a regular grid with spacing cubeSize/N; the boundary wraps so neighbors of an edge cell are on the opposite face.">cube size <input id="cubeSize" type="number" min="2" max="100" step="1" value="18"></label>
+  <hr>
+  <label title="Per-step alignment fraction. Each frame applies a rotation that's η·(1/6)·Σ rot_to_neighbors — i.e. rotates ~η of the way toward the average neighbor orientation. 0.05 = slow relaxation; 0.5 = aggressive snap.">step rate η <input id="eta" type="range" min="0.01" max="1.0" step="0.01" value="0.2"></label>
+  <label title="Per-step random-rotation magnitude (radians). Each axis of the rotation update gets uniform noise in [-noise, noise]. Acts like temperature: noise > 0 keeps the system fluctuating instead of freezing on a metastable defect.">noise <input id="noise" type="range" min="0" max="0.5" step="0.005" value="0"></label>
+  <hr>
+  <label title="Render mode.&#10;&#10;heat: voxel colored AND faded by misalignment to neighbors. Aligned cells are transparent, defects show as bright opaque clusters. Highlights DEFECTS.&#10;domains: voxel colored by its frame's +Z direction (HSL hue from azimuth, lightness from elevation), and faded by 1−misalignment so aligned regions show as solid same-color blobs and domain walls / defects fade out. Highlights ALIGNED DOMAINS.&#10;axes: each grid point shows its frame as 3 line segments — red = +X, green = +Y, blue = +Z.">render <select id="renderMode">
+    <option value="heat">misalignment (heat)</option>
+    <option value="domains">domains (direction)</option>
+    <option value="axes">axes (RGB sticks)</option>
+  </select></label>
+  <label class="mode-axes" title="Length of each axis stick (visual only). The frame is drawn as 3 line segments from the grid point outward — red = +X, green = +Y, blue = +Z. Set near the grid spacing to avoid overlap, smaller to declutter.">axis length <input id="axisLen" type="range" min="0.05" max="2.0" step="0.05" value="0.5"></label>
+  <label class="mode-voxel" title="Voxel size as a fraction of the grid spacing. 1.0 = voxels touch their neighbors (no gaps); smaller = isolated cubes with visible spacing.">voxel size <input id="voxelScale" type="range" min="0.1" max="1.0" step="0.05" value="1.0"></label>
+  <label class="mode-voxel" title="Misalignment value that maps to 'fully saturated' on the alpha curve. In heat mode this is the value that becomes fully bright red and fully opaque; in domains mode it's the value at which a cell becomes fully transparent.">color cap <input id="misalignCap" type="range" min="0.05" max="1.0" step="0.05" value="0.5"></label>
+  <label class="mode-voxel" title="Transparency curve exponent.&#10;heat mode:    alpha = t^γ          (t = misalignment / cap; γ>1 = only severe defects show)&#10;domains mode: alpha = (1−t)^γ      (γ>1 = only nearly-perfect aligned regions show)">α gamma <input id="alphaGamma" type="range" min="0.2" max="5.0" step="0.1" value="1.0"></label>
+  <label title="How many alignment steps to run between renders. 1 = step every frame; higher values let you watch fast convergence in real time.">steps/frame <input id="stepsPerFrame" type="number" min="1" max="50" step="1" value="1"></label>
+  <div class="row">
+    <button id="resetBtn">reset</button>
+    <button id="pauseBtn">pause</button>
+    <button id="randBtn">randomize</button>
+  </div>
+</div>
+
+<div id="histPanel">
+  <h2>+Z direction histogram</h2>
+  <canvas id="histCanvas"></canvas>
+</div>
+
+<div id="stats"></div>
+<div id="help"><a href="index.html">← particle sim</a>drag = orbit · scroll = zoom · x/y/z keys (Shift = reverse) shift cube axes</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import {
+  createAlignGrid, randomizeAlignGrid, stepAlign,
+  fillAxesGeometry, fillZDirections, fillCellMisalignment,
+  meanNeighborMisalignment,
+} from './align.mjs?v=3';
+import { createDirectionHistogram } from './histogram.mjs?v=2';
+import { createGPUAligner } from './align_gpu.mjs?v=1';
+
+const params = {
+  N: 16,
+  cubeSize: 18,
+  eta: 0.2,
+  noise: 0,
+  renderMode: 'heat',
+  axisLen: 0.5,
+  voxelScale: 1.0,
+  misalignCap: 0.5,
+  alphaGamma: 1.0,
+  stepsPerFrame: 1,
+  // Render-only origin shift in grid-cell units. PBC wraps — pure visual
+  // rotation of which cell sits where; the simulation state is unchanged.
+  offsetCells: [0, 0, 0],
+  // Run the alignment iteration on the GPU (ping-pong float texture +
+  // fragment shader). Enabled by default; falls back to CPU automatically
+  // if the renderer is WebGL1.
+  useGPU: true,
+};
+
+let scene, camera, renderer, controls, cubeMesh;
+let lines, lineGeom, linePos, lineCol;
+let voxelMesh, voxelMisalignBuf, voxelAlphaBuf;
+let state, axesBuf, dirsBuf, hist;
+let gpuAligner = null;
+let paused = false;
+const _voxelMatrix = new THREE.Matrix4();
+const _voxelColor = new THREE.Color();
+
+function buildScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0d12);
+  scene.fog = new THREE.Fog(0x0a0d12, 35, 100);
+
+  camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 500);
+  camera.position.set(12, 14, 28);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  // The line material doesn't react to lighting; the voxel material
+  // (MeshStandardMaterial) does. Ambient + one directional light gives the
+  // voxels a bit of depth without overwhelming their per-instance colors.
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.5);
+  dl.position.set(6, 12, 8); scene.add(dl);
+}
+
+// Periodic cube: the 12 edges only (not a triangulated wireframe) so the
+// boundary stays visually clean. Replaces the existing mesh on cube-size
+// changes.
+function rebuildCube() {
+  if (cubeMesh) scene.remove(cubeMesh);
+  const L = params.cubeSize;
+  const eg = new THREE.EdgesGeometry(new THREE.BoxGeometry(L, L, L));
+  cubeMesh = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({
+    color: 0x2a3a4f, transparent: true, opacity: 0.6,
+  }));
+  scene.add(cubeMesh);
+}
+
+// Build (or rebuild after N change) the line-segment mesh that draws every
+// cell's three coordinate axes. Vertex layout matches fillAxesGeometry's
+// output: (origin, end) pairs for X, Y, Z back-to-back per cell. The color
+// buffer is set once at build time — only positions get rewritten per frame.
+function rebuildGrid() {
+  if (lines) {
+    scene.remove(lines);
+    lineGeom.dispose();
+  }
+  if (voxelMesh) {
+    scene.remove(voxelMesh);
+    voxelMesh.geometry.dispose();
+  }
+  if (gpuAligner) {
+    gpuAligner.dispose();
+    gpuAligner = null;
+  }
+  state = createAlignGrid(params.N, params.cubeSize);
+  const total = params.N * params.N * params.N;
+  axesBuf = new Float32Array(total * 18);
+  dirsBuf = new Float32Array(total * 3);
+  voxelMisalignBuf = new Float32Array(total);
+  linePos = axesBuf;
+  lineCol = new Float32Array(total * 18);
+  for (let i = 0; i < total; i++) {
+    const ci = i * 18;
+    // X axis: 2 verts, red.
+    lineCol[ci     ] = 1; lineCol[ci +  1] = 0.15; lineCol[ci +  2] = 0.15;
+    lineCol[ci +  3] = 1; lineCol[ci +  4] = 0.15; lineCol[ci +  5] = 0.15;
+    // Y axis: 2 verts, green.
+    lineCol[ci +  6] = 0.15; lineCol[ci +  7] = 1; lineCol[ci +  8] = 0.15;
+    lineCol[ci +  9] = 0.15; lineCol[ci + 10] = 1; lineCol[ci + 11] = 0.15;
+    // Z axis: 2 verts, blue.
+    lineCol[ci + 12] = 0.3; lineCol[ci + 13] = 0.4; lineCol[ci + 14] = 1;
+    lineCol[ci + 15] = 0.3; lineCol[ci + 16] = 0.4; lineCol[ci + 17] = 1;
+  }
+  lineGeom = new THREE.BufferGeometry();
+  lineGeom.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+  lineGeom.setAttribute('color', new THREE.BufferAttribute(lineCol, 3));
+  lines = new THREE.LineSegments(lineGeom, new THREE.LineBasicMaterial({
+    vertexColors: true,
+  }));
+  lines.frustumCulled = false;
+  scene.add(lines);
+
+  // Voxel InstancedMesh: a unit-cube geometry, one instance per grid cell,
+  // scaled and translated via the per-instance matrix. Per-instance colors
+  // (instanceColor attribute) carry the misalignment heat map; per-instance
+  // alpha (a custom InstancedBufferAttribute, read by the shader patch
+  // below) fades aligned cells out so defects show through. Unit geometry +
+  // matrix-scale lets voxelScale be a slider with no geometry rebuild.
+  const voxGeo = new THREE.BoxGeometry(1, 1, 1);
+  // alphaToCoverage instead of conventional alpha blending. The standard
+  // alpha-blend pipeline needs back-to-front draw order for correct
+  // composition, and InstancedMesh has no per-instance depth sort — so when
+  // the camera flips around (orbit) or instances get repositioned (xyz key
+  // shift), the rendering order suddenly disagrees with depth and you get
+  // washed-out / missing patches. alphaToCoverage uses the MSAA sample mask
+  // to encode per-fragment alpha; depth testing then works correctly per
+  // sample, so the result is order-independent at the cost of a slight
+  // graininess (4-sample MSAA → ~5 alpha levels per pixel). Renderer was
+  // already created with antialias: true, which is what enables this.
+  const voxMat = new THREE.MeshStandardMaterial({
+    roughness: 0.6, metalness: 0.0,
+    alphaToCoverage: true,
+    // Discard fragments below ~zero alpha entirely (avoids depth pollution
+    // from invisible cells and keeps the coverage mask clean).
+    alphaTest: 0.01,
+  });
+  // MeshStandardMaterial doesn't expose per-instance alpha out of the box,
+  // so we splice a tiny attribute + varying into the standard shader and
+  // multiply gl_FragColor.a after <opaque_fragment>. The attribute is fed
+  // from voxelAlphaBuf, written each frame in updateVoxelColors.
+  voxMat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>',
+        'attribute float instanceAlpha;\nvarying float vAlpha;\n#include <common>')
+      .replace('#include <begin_vertex>',
+        'vAlpha = instanceAlpha;\n#include <begin_vertex>');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>',
+        'varying float vAlpha;\n#include <common>')
+      .replace('#include <opaque_fragment>',
+        '#include <opaque_fragment>\n  gl_FragColor.a *= vAlpha;');
+  };
+  voxelMesh = new THREE.InstancedMesh(voxGeo, voxMat, total);
+  voxelMesh.frustumCulled = false;
+  // Initialise the instanceColor buffer (THREE allocates it on first call).
+  for (let i = 0; i < total; i++) voxelMesh.setColorAt(i, _voxelColor.set(0));
+  // Per-instance alpha. Zeros = invisible until the first updateVoxelColors.
+  voxelAlphaBuf = new Float32Array(total);
+  voxelMesh.geometry.setAttribute('instanceAlpha',
+    new THREE.InstancedBufferAttribute(voxelAlphaBuf, 1));
+  updateVoxelTransforms();
+  scene.add(voxelMesh);
+
+  applyRenderMode();
+  if (params.useGPU) tryEnableGPU();
+}
+
+// Create the GPU aligner (if supported) and seed it from the current CPU
+// state. Falls back to CPU + uncheck the toggle on WebGL1. Idempotent: if
+// gpuAligner already exists, no-op.
+function tryEnableGPU() {
+  if (gpuAligner) return;
+  gpuAligner = createGPUAligner(renderer, params.N);
+  if (!gpuAligner) {
+    console.warn('GPU compute unavailable (WebGL2 required). Using CPU.');
+    params.useGPU = false;
+    const el = document.getElementById('useGPU');
+    if (el) el.checked = false;
+    return;
+  }
+  gpuAligner.upload(state.quats);
+}
+
+// Set each voxel's per-instance matrix to scale·translate. Cheap (one matrix
+// per cell) so safe to call from a slider's input event whenever voxelScale
+// or the grid spacing changes.
+function updateVoxelTransforms() {
+  if (!voxelMesh || !state) return;
+  const total = params.N * params.N * params.N;
+  const L = params.cubeSize;
+  const half = 0.5 * L;
+  const s = L / params.N;
+  const sz = s * params.voxelScale;
+  const offX = params.offsetCells[0] * s;
+  const offY = params.offsetCells[1] * s;
+  const offZ = params.offsetCells[2] * s;
+  for (let i = 0; i < total; i++) {
+    let px = state.positions[3*i    ] + offX;
+    let py = state.positions[3*i + 1] + offY;
+    let pz = state.positions[3*i + 2] + offZ;
+    px -= L * Math.floor((px + half) / L);
+    py -= L * Math.floor((py + half) / L);
+    pz -= L * Math.floor((pz + half) / L);
+    _voxelMatrix.makeScale(sz, sz, sz);
+    _voxelMatrix.setPosition(px, py, pz);
+    voxelMesh.setMatrixAt(i, _voxelMatrix);
+  }
+  voxelMesh.instanceMatrix.needsUpdate = true;
+}
+
+// Per-cell color + alpha. Two voxel modes:
+//   heat:    color=blue→red by misalignment t, alpha=t^γ (linear default).
+//            Aligned cells fade out; defects pop opaque red.
+//   domains: color=HSL from the cell's +Z direction (hue=azimuth atan2(y,x),
+//            saturation=horiz-component, lightness=elevation z), alpha=
+//            (1−t)^γ. Aligned cells stay opaque in their direction colour;
+//            misaligned cells (domain walls / defects) fade out, so the
+//            visualization reads as colored blobs of aligned domains.
+function updateVoxelColors() {
+  fillCellMisalignment(state, voxelMisalignBuf);
+  const total = voxelMisalignBuf.length;
+  const inv = 1 / Math.max(0.01, params.misalignCap);
+  const gamma = params.alphaGamma;
+  const linearGamma = Math.abs(gamma - 1) < 1e-6;
+  const TWO_PI_INV = 1 / (2 * Math.PI);
+  if (params.renderMode === 'domains') {
+    for (let i = 0; i < total; i++) {
+      let t = voxelMisalignBuf[i] * inv;
+      if (t > 1) t = 1;
+      const dx = dirsBuf[3*i    ];
+      const dy = dirsBuf[3*i + 1];
+      const dz = dirsBuf[3*i + 2];
+      // Azimuth → hue. Equatorial directions get full saturation; near the
+      // poles (dz → ±1) saturation drops, and we use lightness to tell +Z
+      // (lighter) from −Z (darker) since their azimuth degenerates to 0.
+      let hue = Math.atan2(dy, dx) * TWO_PI_INV;
+      if (hue < 0) hue += 1;
+      const sat = Math.sqrt(dx*dx + dy*dy);
+      const lum = 0.30 + 0.20 * (dz + 1);
+      _voxelColor.setHSL(hue, sat, lum);
+      voxelMesh.setColorAt(i, _voxelColor);
+      const u = 1 - t;
+      voxelAlphaBuf[i] = linearGamma ? u : Math.pow(u, gamma);
+    }
+  } else {
+    // heat mode (default): misalignment-driven color and alpha.
+    for (let i = 0; i < total; i++) {
+      let t = voxelMisalignBuf[i] * inv;
+      if (t > 1) t = 1;
+      _voxelColor.setHSL(0.66 * (1 - t), 0.85, 0.18 + 0.42 * t);
+      voxelMesh.setColorAt(i, _voxelColor);
+      voxelAlphaBuf[i] = linearGamma ? t : Math.pow(t, gamma);
+    }
+  }
+  voxelMesh.instanceColor.needsUpdate = true;
+  voxelMesh.geometry.attributes.instanceAlpha.needsUpdate = true;
+}
+
+// Show the mesh that matches the current render mode; hide the other. Both
+// voxel modes (heat, domains) share the same InstancedMesh — only the
+// per-instance color + alpha differ — so they have the same visibility
+// rules. .mode-voxel is shown for either of them.
+function applyRenderMode() {
+  const m = params.renderMode;
+  const isVoxel = m === 'heat' || m === 'domains';
+  if (lines)     lines.visible     = m === 'axes';
+  if (voxelMesh) voxelMesh.visible = isVoxel;
+  for (const el of document.querySelectorAll('.mode-axes'))
+    el.style.display = m === 'axes' ? '' : 'none';
+  for (const el of document.querySelectorAll('.mode-voxel'))
+    el.style.display = isVoxel ? '' : 'none';
+}
+
+const statsEl = document.getElementById('stats');
+let frame = 0, fpsTick = performance.now(), fps = 0;
+let lastMisalignTick = 0, lastMisalign = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (!paused) {
+    if (gpuAligner) {
+      // All steps stay on GPU; one readPixels per frame brings the field
+      // back so the CPU-side visualization (voxel colors, axes, histogram)
+      // sees the freshest state.
+      for (let s = 0; s < params.stepsPerFrame; s++) {
+        gpuAligner.step(params.eta, params.noise);
+      }
+      gpuAligner.readBack(state.quats);
+    } else {
+      for (let s = 0; s < params.stepsPerFrame; s++) {
+        stepAlign(state, params.eta, params.noise);
+      }
+    }
+  }
+  // Fill +Z directions first — they feed both the histogram and the
+  // domain-mode voxel coloring (hue from azimuth, lightness from elevation).
+  fillZDirections(state, dirsBuf);
+  if (params.renderMode === 'axes') {
+    fillAxesGeometry(state, params.axisLen, axesBuf, params.offsetCells);
+    lineGeom.attributes.position.needsUpdate = true;
+  } else {
+    updateVoxelColors();
+  }
+  hist.update(dirsBuf, params.N * params.N * params.N);
+  hist.syncCamera(camera);
+  controls.update();
+  renderer.render(scene, camera);
+  hist.render();
+
+  frame++;
+  const now = performance.now();
+  if (now - fpsTick > 500) {
+    fps = (frame * 1000 / (now - fpsTick)) | 0;
+    frame = 0; fpsTick = now;
+    // meanNeighborMisalignment is O(N³) — refresh it less often than the FPS
+    // counter to keep the cost down on big grids.
+    if (now - lastMisalignTick > 1000) {
+      lastMisalign = meanNeighborMisalignment(state);
+      lastMisalignTick = now;
+    }
+    const total = params.N ** 3;
+    const o = params.offsetCells;
+    statsEl.textContent =
+      `${total} frames · ${fps} fps · η=${params.eta.toFixed(2)} · `
+      + `noise=${params.noise.toFixed(3)} · `
+      + `misalign=${lastMisalign.toFixed(3)} · `
+      + `offset=(${o[0]},${o[1]},${o[2]})`;
+  }
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+buildScene();
+rebuildCube();
+rebuildGrid();
+hist = createDirectionHistogram(document.getElementById('histCanvas'));
+
+// UI bindings. `change` (vs `input`) lets us cheap-update params on every
+// keystroke but only rebuild the heavy bits when the user commits the value.
+function bindNumber(id, key, after) {
+  const el = document.getElementById(id);
+  el.value = params[key];
+  el.addEventListener('input', () => {
+    const v = parseFloat(el.value);
+    if (Number.isFinite(v)) params[key] = v;
+  });
+  if (after) el.addEventListener('change', after);
+}
+function bindRange(id, key) {
+  const el = document.getElementById(id);
+  el.value = params[key];
+  el.addEventListener('input', () => { params[key] = parseFloat(el.value); });
+}
+
+bindNumber('N',             'N',             () => { rebuildGrid(); });
+bindNumber('cubeSize',      'cubeSize',      () => { rebuildCube(); rebuildGrid(); });
+bindNumber('stepsPerFrame', 'stepsPerFrame');
+bindRange('eta',     'eta');
+bindRange('noise',   'noise');
+bindRange('axisLen', 'axisLen');
+bindRange('voxelScale', 'voxelScale');
+bindRange('misalignCap', 'misalignCap');
+bindRange('alphaGamma', 'alphaGamma');
+
+// voxelScale needs to push the new size into every instance matrix; the
+// other range bindings just twiddle params consumed by per-frame updates.
+document.getElementById('voxelScale').addEventListener('input', updateVoxelTransforms);
+
+const renderModeEl = document.getElementById('renderMode');
+renderModeEl.value = params.renderMode;
+renderModeEl.addEventListener('change', () => {
+  params.renderMode = renderModeEl.value;
+  applyRenderMode();
+});
+applyRenderMode();   // sync UI visibility with the initial mode
+
+document.getElementById('resetBtn').onclick = () => rebuildGrid();
+document.getElementById('pauseBtn').onclick = (e) => {
+  paused = !paused;
+  e.target.textContent = paused ? 'play' : 'pause';
+};
+document.getElementById('randBtn').onclick = () => {
+  randomizeAlignGrid(state);
+  if (gpuAligner) gpuAligner.upload(state.quats);
+};
+
+// GPU toggle: switching off pulls the latest field back from the texture
+// into state.quats so subsequent CPU stepAlign continues from the right
+// place. Switching on re-uploads the current CPU state.
+const useGPUEl = document.getElementById('useGPU');
+useGPUEl.checked = params.useGPU;
+useGPUEl.addEventListener('change', () => {
+  params.useGPU = useGPUEl.checked;
+  if (params.useGPU) {
+    tryEnableGPU();
+  } else if (gpuAligner) {
+    gpuAligner.readBack(state.quats);
+    gpuAligner.dispose();
+    gpuAligner = null;
+  }
+});
+
+// Refine: double N and copy each old cell to the 2×2×2 block of new cells
+// it sits inside. The simulation continues from the (now-finer) field
+// instead of restarting from random — useful for letting a coarse
+// near-converged state seed a high-resolution refinement.
+document.getElementById('refineBtn').onclick = () => {
+  const oldN = params.N;
+  const newN = oldN * 2;
+  if (newN > 64) return;     // texture cap: 64² = 4096 = guaranteed WebGL min
+  // Snapshot before rebuildGrid (which re-allocates state.quats).
+  const oldQuats = new Float32Array(state.quats);
+  params.N = newN;
+  document.getElementById('N').value = String(newN);
+  rebuildGrid();
+  // Upscale: new cell (ix, iy, iz) inherits from old (⌊ix/2⌋, ⌊iy/2⌋, ⌊iz/2⌋).
+  const newQuats = state.quats;
+  for (let iz = 0; iz < newN; iz++) {
+    for (let iy = 0; iy < newN; iy++) {
+      for (let ix = 0; ix < newN; ix++) {
+        const iN = (iz * newN + iy) * newN + ix;
+        const iO = ((iz >> 1) * oldN + (iy >> 1)) * oldN + (ix >> 1);
+        newQuats[4*iN    ] = oldQuats[4*iO    ];
+        newQuats[4*iN + 1] = oldQuats[4*iO + 1];
+        newQuats[4*iN + 2] = oldQuats[4*iO + 2];
+        newQuats[4*iN + 3] = oldQuats[4*iO + 3];
+      }
+    }
+  }
+  if (gpuAligner) gpuAligner.upload(state.quats);
+};
+
+// Keyboard: x/y/z shift the displayed grid by one cell along that cube axis;
+// Shift+x/y/z reverses the direction. PBC means this is purely visual — the
+// simulation state and neighbor topology don't change. Voxels need an
+// instance-matrix update right away; axes pick up the new offset on the
+// next frame's fillAxesGeometry call.
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  let dx = 0, dy = 0, dz = 0;
+  switch (e.key) {
+    case 'x': dx =  1; break;
+    case 'X': dx = -1; break;
+    case 'y': dy =  1; break;
+    case 'Y': dy = -1; break;
+    case 'z': dz =  1; break;
+    case 'Z': dz = -1; break;
+    default: return;
+  }
+  e.preventDefault();
+  const N = params.N;
+  params.offsetCells[0] = ((params.offsetCells[0] + dx) % N + N) % N;
+  params.offsetCells[1] = ((params.offsetCells[1] + dy) % N + N) % N;
+  params.offsetCells[2] = ((params.offsetCells[2] + dz) % N + N) % N;
+  updateVoxelTransforms();
+});
+
+animate();
+</script>
+</body>
+</html>
