@@ -98,6 +98,7 @@
   <label class="mode-voxel" title="Misalignment value that maps to 'fully saturated' on the alpha curve. In heat mode this is the value that becomes fully bright red and fully opaque; in domains mode it's the value at which a cell becomes fully transparent.">color cap <input id="misalignCap" type="range" min="0.05" max="1.0" step="0.05" value="0.5"></label>
   <label class="mode-voxel" title="Transparency curve exponent.&#10;heat mode:    alpha = t^γ          (t = misalignment / cap; γ>1 = only severe defects show)&#10;domains mode: alpha = (1−t)^γ      (γ>1 = only nearly-perfect aligned regions show)">α gamma <input id="alphaGamma" type="range" min="0.2" max="5.0" step="0.1" value="1.0"></label>
   <label class="mode-components" title="Misalignment threshold for components mode. Cells with misalignment ≥ this value are kept and grouped into 6-connected components (PBC-aware); cells below it are invisible. Watch the misalignment histogram (bottom-left) — typically you want the threshold in the empty gap between the bulk peak (low misalign, aligned cells) and the defect-line peak (high misalign).">threshold <input id="misThreshold" type="range" min="0" max="1" step="0.005" value="0.3"></label>
+  <label class="mode-components" title="When two voxels are selected, also launch 8 short 'tube' paths from points around the loop in the two directions ⊥ to the loop's plane (i.e. along the segment between the two selected voxels). Each tube takes this many grid-spacing steps in each direction and draws a small RGB frame at every step, so you can see how the orientation field varies along the perpendicular to the loop. 0 = no tubes.">tube length <input id="tubeLength" type="range" min="0" max="30" step="1" value="10"></label>
   <hr>
   <label title="Trace streamlines starting from a regular grid on the cube's −Z face, stepping along each cell's local +Z direction, until they exit any cube face. Always rendered on top of the voxel mesh so they overlay any render mode (heat, domains, axes).">paths <input type="checkbox" id="showPaths"></label>
   <label class="paths-on" title="Number of streamline seeds along each axis on the seeding face. Total streamlines = seeds².">seeds/side <input id="pathSeeds" type="range" min="2" max="20" step="1" value="10"></label>
@@ -185,6 +186,7 @@ const params = {
   misalignCap: 0.5,
   alphaGamma: 1.0,
   misThreshold: 0.3,
+  tubeLength: 10,
 
   stepsPerFrame: 1,
   // Render-only origin shift in grid-cell units. PBC wraps — pure visual
@@ -223,6 +225,14 @@ const _selCells = [];                 // cell indices, length 0/1/2
 let _selMarkerMesh = null;            // 2 highlight spheres on the picked voxels
 let _circleLineMesh = null;           // LineLoop drawing the circle in 3D
 let _circleFramesMesh = null;         // LineSegments: small RGB frames at each sample
+let _tubeFramesMesh = null;           // LineSegments: frames at each step along ±d test paths
+let _tubeFramesPos = null;            // backing buffer for the tube frames
+let _tubeLineMesh = null;             // LineSegments: the actual (curved) test-particle paths
+let _tubeLinePos = null;              // backing buffer for the tube path lines
+const TUBE_NUM_PATHS = 32;            // evenly-spaced loop samples we launch tubes from
+const TUBE_MAX_STEPS = 30;            // matches the tube-length slider's max
+const TUBE_FRAMES_MAX = TUBE_NUM_PATHS * 2 * TUBE_MAX_STEPS;
+const TUBE_VERTS_MAX = TUBE_FRAMES_MAX * 6;
 let _quatPlotCanvas, _quatPlotCtx, _quatStatusEl;
 let _quatPlotData = null;             // {quats, dotEnd, axisRgb, ...} or null
 let rotationBall = null;              // 3D rotation-vector view of the loop
@@ -387,6 +397,55 @@ function buildScene() {
   _circleFramesMesh.renderOrder = 1012;
   _circleFramesMesh.visible = false;
   scene.add(_circleFramesMesh);
+
+  // Tube frames: 8 paths × 2 directions × up-to-TUBE_MAX_STEPS steps. Color
+  // attribute is set once (RGB by axis); position is rewritten each frame
+  // by _refreshLoopInspector.
+  const tubePos = new Float32Array(TUBE_VERTS_MAX * 3);
+  const tubeCol = new Float32Array(TUBE_VERTS_MAX * 3);
+  for (let f = 0; f < TUBE_FRAMES_MAX; f++) {
+    const ci = f * 18;
+    tubeCol[ci     ] = 1.00; tubeCol[ci +  1] = 0.20; tubeCol[ci +  2] = 0.20;
+    tubeCol[ci +  3] = 1.00; tubeCol[ci +  4] = 0.20; tubeCol[ci +  5] = 0.20;
+    tubeCol[ci +  6] = 0.20; tubeCol[ci +  7] = 1.00; tubeCol[ci +  8] = 0.20;
+    tubeCol[ci +  9] = 0.20; tubeCol[ci + 10] = 1.00; tubeCol[ci + 11] = 0.20;
+    tubeCol[ci + 12] = 0.40; tubeCol[ci + 13] = 0.50; tubeCol[ci + 14] = 1.00;
+    tubeCol[ci + 15] = 0.40; tubeCol[ci + 16] = 0.50; tubeCol[ci + 17] = 1.00;
+  }
+  const tubeGeom = new THREE.BufferGeometry();
+  tubeGeom.setAttribute('position', new THREE.BufferAttribute(tubePos, 3));
+  tubeGeom.setAttribute('color',    new THREE.BufferAttribute(tubeCol, 3));
+  tubeGeom.setDrawRange(0, 0);
+  _tubeFramesMesh = new THREE.LineSegments(tubeGeom, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.65,
+    depthTest: false, depthWrite: false,
+  }));
+  _tubeFramesMesh.frustumCulled = false;
+  _tubeFramesMesh.renderOrder = 1010;
+  _tubeFramesMesh.visible = false;
+  scene.add(_tubeFramesMesh);
+  _tubeFramesPos = tubePos;
+
+  // Tube path lines: thin yellow segments connecting consecutive frame
+  // origins. The path itself is parallel-transported in the local frame
+  // field (see _refreshLoopInspector), so for a uniform field these are
+  // straight along ±d, while for a varying field they curve. Wrap-jumping
+  // segments are skipped (same handling as the streamlines + observer
+  // worldline) so the line cleanly breaks at PBC faces.
+  const TUBE_LINE_VERTS_MAX = TUBE_FRAMES_MAX * 2;
+  const tubeLinePos = new Float32Array(TUBE_LINE_VERTS_MAX * 3);
+  const tubeLineGeom = new THREE.BufferGeometry();
+  tubeLineGeom.setAttribute('position', new THREE.BufferAttribute(tubeLinePos, 3));
+  tubeLineGeom.setDrawRange(0, 0);
+  _tubeLineMesh = new THREE.LineSegments(tubeLineGeom, new THREE.LineBasicMaterial({
+    color: 0xffd866, transparent: true, opacity: 0.55,
+    depthTest: false, depthWrite: false,
+  }));
+  _tubeLineMesh.frustumCulled = false;
+  _tubeLineMesh.renderOrder = 1009;
+  _tubeLineMesh.visible = false;
+  scene.add(_tubeLineMesh);
+  _tubeLinePos = tubeLinePos;
 }
 
 // Periodic cube: the 12 edges only (not a triangulated wireframe) so the
@@ -1586,6 +1645,14 @@ function _selectVoxel(cellIdx) {
   } else {
     if (_circleLineMesh) _circleLineMesh.visible = false;
     if (_circleFramesMesh) _circleFramesMesh.visible = false;
+    if (_tubeFramesMesh) {
+      _tubeFramesMesh.visible = false;
+      _tubeFramesMesh.geometry.setDrawRange(0, 0);
+    }
+    if (_tubeLineMesh) {
+      _tubeLineMesh.visible = false;
+      _tubeLineMesh.geometry.setDrawRange(0, 0);
+    }
     _quatPlotData = null;
     _drawQuatPlot();
     if (rotationBall) rotationBall.clear();
@@ -1596,6 +1663,14 @@ function _clearVoxelSelection() {
   _updateSelectionMarkers();
   if (_circleLineMesh) _circleLineMesh.visible = false;
   if (_circleFramesMesh) _circleFramesMesh.visible = false;
+  if (_tubeFramesMesh) {
+    _tubeFramesMesh.visible = false;
+    _tubeFramesMesh.geometry.setDrawRange(0, 0);
+  }
+  if (_tubeLineMesh) {
+    _tubeLineMesh.visible = false;
+    _tubeLineMesh.geometry.setDrawRange(0, 0);
+  }
   _quatPlotData = null;
   _drawQuatPlot();
   if (rotationBall) rotationBall.clear();
@@ -1769,6 +1844,151 @@ function _refreshLoopInspector() {
       }
     }
     rotationBall.update(_rotVecsBuf, N_samp);
+  }
+
+  // Test-particle "tubes": from each of TUBE_NUM_PATHS evenly-spaced loop
+  // samples, launch a particle in ±d (the loop's normal) and let it follow
+  // the local frame field by parallel transport — i.e. its velocity in the
+  // local frame stays constant as it moves, so the world-frame velocity
+  // rotates as the local frame rotates. For a uniform field the path is
+  // straight along ±d; for a varying field (twisting near a defect) the
+  // path curves. At each step we drop a small RGB frame showing the local
+  // orientation, and a thin yellow line connects consecutive frames so
+  // the path's curvature is directly visible.
+  //
+  // Math: V_local = R(p_seed)⁻¹ · V_initial is held constant; at any later
+  // p, the world-frame velocity is V_world = R(p) · V_local. Equivalently,
+  // V_world evolves as V' = R(p_new)·R(p_old)⁻¹·V (the "rolling" connection
+  // of the frame field). Quaternion sampling is sign-fixed to the previous
+  // step's quaternion so the rotation matrices vary continuously.
+  const tubeLen = Math.max(0, params.tubeLength | 0);
+  if (_tubeFramesMesh && _tubeLineMesh) {
+    if (tubeLen === 0) {
+      _tubeFramesMesh.geometry.setDrawRange(0, 0);
+      _tubeFramesMesh.visible = false;
+      _tubeLineMesh.geometry.setDrawRange(0, 0);
+      _tubeLineMesh.visible = false;
+    } else {
+      const numTestPaths = Math.min(TUBE_NUM_PATHS, N_samp);
+      const stepSize = params.cubeSize / params.N;
+      const tubeAxisLen = Math.max(0.04, axisLen * 0.7);
+      const wrapJump = half;
+      const tubePos = _tubeFramesPos;
+      const linePos = _tubeLinePos;
+      const tQ = [0, 0, 0, 0];
+      const tQprev = [0, 0, 0, 0];
+      const tLog = [0, 0, 0];
+      let frameIdx = 0;
+      let lineSegIdx = 0;
+      for (let pi = 0; pi < numTestPaths; pi++) {
+        const sampleIdx = Math.floor(pi * N_samp / numTestPaths);
+        const phi = sampleIdx * (2 * Math.PI / N_samp);
+        const cP = Math.cos(phi), sP = Math.sin(phi);
+        const seedX = mx + radius * (cP * ux + sP * vx);
+        const seedY = my + radius * (cP * uy + sP * vy);
+        const seedZ = mz + radius * (cP * uz + sP * vz);
+        // Sample the seed quaternion once so we can pin V_local for both
+        // ±d test particles.
+        let slx = seedX - offX, sly = seedY - offY, slz = seedZ - offZ;
+        slx -= L * Math.floor((slx + half) / L);
+        sly -= L * Math.floor((sly + half) / L);
+        slz -= L * Math.floor((slz + half) / L);
+        tLog[0] = slx; tLog[1] = sly; tLog[2] = slz;
+        _sampleQuatLogical(tLog, null, tQ);
+        const sQx = tQ[0], sQy = tQ[1], sQz = tQ[2], sQw = tQ[3];
+
+        for (let dirSign = +1; dirSign >= -1; dirSign -= 2) {
+          // Initial world velocity = ±d.
+          let vWx = dirSign * dirX, vWy = dirSign * dirY, vWz = dirSign * dirZ;
+          // V_local = R(seedQ)⁻¹ · V_world  (rotate by the conjugate of seedQ).
+          // Conjugate: (-x, -y, -z, w).
+          let cqx = -sQx, cqy = -sQy, cqz = -sQz, cqw = sQw;
+          let tcx = 2*(cqy*vWz - cqz*vWy);
+          let tcy = 2*(cqz*vWx - cqx*vWz);
+          let tcz = 2*(cqx*vWy - cqy*vWx);
+          const vLx = vWx + cqw*tcx + (cqy*tcz - cqz*tcy);
+          const vLy = vWy + cqw*tcy + (cqz*tcx - cqx*tcz);
+          const vLz = vWz + cqw*tcz + (cqx*tcy - cqy*tcx);
+          // q_prev tracks the previous step's quaternion so each new sample
+          // is sign-fixed continuously along the path.
+          tQprev[0] = sQx; tQprev[1] = sQy; tQprev[2] = sQz; tQprev[3] = sQw;
+          // Position state: pX/Y/Z is the un-wrapped path coord; wpx/y/z
+          // is the wrapped (rendering) position. Track prevW too so we can
+          // skip wrap-jumping path-line segments.
+          let pX = seedX, pY = seedY, pZ = seedZ;
+          let prevWx = seedX - L * Math.floor((seedX + half) / L);
+          let prevWy = seedY - L * Math.floor((seedY + half) / L);
+          let prevWz = seedZ - L * Math.floor((seedZ + half) / L);
+
+          for (let step = 1; step <= tubeLen && frameIdx < TUBE_FRAMES_MAX; step++) {
+            // Step using current world velocity.
+            pX += vWx * stepSize;
+            pY += vWy * stepSize;
+            pZ += vWz * stepSize;
+            // Wrap displayed for rendering / sampling.
+            const wpx = pX - L * Math.floor((pX + half) / L);
+            const wpy = pY - L * Math.floor((pY + half) / L);
+            const wpz = pZ - L * Math.floor((pZ + half) / L);
+            let lx = wpx - offX, ly = wpy - offY, lz = wpz - offZ;
+            lx -= L * Math.floor((lx + half) / L);
+            ly -= L * Math.floor((ly + half) / L);
+            lz -= L * Math.floor((lz + half) / L);
+            tLog[0] = lx; tLog[1] = ly; tLog[2] = lz;
+            // Sample quaternion at the new position, sign-fixed to q_prev.
+            _sampleQuatLogical(tLog, tQprev, tQ);
+            const qx = tQ[0], qy = tQ[1], qz = tQ[2], qw = tQ[3];
+            // Update world velocity: V_world = R(q) · V_local.
+            const tx2 = 2*(qy*vLz - qz*vLy);
+            const ty2 = 2*(qz*vLx - qx*vLz);
+            const tz2 = 2*(qx*vLy - qy*vLx);
+            vWx = vLx + qw*tx2 + (qy*tz2 - qz*ty2);
+            vWy = vLy + qw*ty2 + (qz*tx2 - qx*tz2);
+            vWz = vLz + qw*tz2 + (qx*ty2 - qy*tx2);
+            // Carry q forward as q_prev for the next step.
+            tQprev[0] = qx; tQprev[1] = qy; tQprev[2] = qz; tQprev[3] = qw;
+
+            // Frame at this step: full local rotation matrix from q.
+            const xx = 1 - 2*(qy*qy + qz*qz);
+            const xy = 2*(qx*qy + qz*qw);
+            const xz = 2*(qx*qz - qy*qw);
+            const yx = 2*(qx*qy - qz*qw);
+            const yy = 1 - 2*(qx*qx + qz*qz);
+            const yz = 2*(qy*qz + qx*qw);
+            const zx = 2*(qx*qz + qy*qw);
+            const zy = 2*(qy*qz - qx*qw);
+            const zz = 1 - 2*(qx*qx + qy*qy);
+            const fi = frameIdx * 18;
+            tubePos[fi     ] = wpx;                  tubePos[fi +  1] = wpy;                  tubePos[fi +  2] = wpz;
+            tubePos[fi +  3] = wpx + xx*tubeAxisLen; tubePos[fi +  4] = wpy + xy*tubeAxisLen; tubePos[fi +  5] = wpz + xz*tubeAxisLen;
+            tubePos[fi +  6] = wpx;                  tubePos[fi +  7] = wpy;                  tubePos[fi +  8] = wpz;
+            tubePos[fi +  9] = wpx + yx*tubeAxisLen; tubePos[fi + 10] = wpy + yy*tubeAxisLen; tubePos[fi + 11] = wpz + yz*tubeAxisLen;
+            tubePos[fi + 12] = wpx;                  tubePos[fi + 13] = wpy;                  tubePos[fi + 14] = wpz;
+            tubePos[fi + 15] = wpx + zx*tubeAxisLen; tubePos[fi + 16] = wpy + zy*tubeAxisLen; tubePos[fi + 17] = wpz + zz*tubeAxisLen;
+            frameIdx++;
+
+            // Path-line segment from previous wrapped position to this
+            // step's wrapped position. Skip wrap-jumping segments so the
+            // line cleanly breaks at the cube faces.
+            if (Math.abs(wpx - prevWx) <= wrapJump &&
+                Math.abs(wpy - prevWy) <= wrapJump &&
+                Math.abs(wpz - prevWz) <= wrapJump &&
+                lineSegIdx * 6 + 6 <= linePos.length) {
+              const li = lineSegIdx * 6;
+              linePos[li     ] = prevWx; linePos[li + 1] = prevWy; linePos[li + 2] = prevWz;
+              linePos[li +  3] = wpx;    linePos[li + 4] = wpy;    linePos[li + 5] = wpz;
+              lineSegIdx++;
+            }
+            prevWx = wpx; prevWy = wpy; prevWz = wpz;
+          }
+        }
+      }
+      _tubeFramesMesh.geometry.setDrawRange(0, frameIdx * 6);
+      _tubeFramesMesh.geometry.attributes.position.needsUpdate = true;
+      _tubeFramesMesh.visible = true;
+      _tubeLineMesh.geometry.setDrawRange(0, lineSegIdx * 2);
+      _tubeLineMesh.geometry.attributes.position.needsUpdate = true;
+      _tubeLineMesh.visible = true;
+    }
   }
 }
 
@@ -2301,6 +2521,7 @@ bindRange('voxelScale', 'voxelScale');
 bindRange('misalignCap', 'misalignCap');
 bindRange('alphaGamma', 'alphaGamma');
 bindRange('misThreshold', 'misThreshold');
+bindRange('tubeLength', 'tubeLength');
 bindRange('pathSeeds', 'pathSeeds');
 bindRange('pathStepFrac', 'pathStepFrac');
 bindRange('obsGridSize', 'obsGridSize');
