@@ -35,6 +35,30 @@
     background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 4px;
     color: #7a8696; }
   #help a { color: #9ad8ff; text-decoration: none; margin-right: 10px; }
+  /* Observer view: fills the right half of the screen when active. The main
+     3D canvas is resized to the left half so the two views sit side-by-side. */
+  #obsPanel { position: fixed; top: 0; right: 0; width: 50%; height: 100%;
+    background: #0a0d12; border-left: 2px solid #25303d;
+    display: none; flex-direction: column; z-index: 5; }
+  #obsPanel.active { display: flex; }
+  #obsPanel header { padding: 8px 12px; display: flex;
+    justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #25303d; flex: 0 0 auto; }
+  #obsPanel header h2 { font-size: 11px; margin: 0; color: #9ad8ff;
+    letter-spacing: .04em; font-weight: normal; }
+  #obsPanel header button { background: #1f2a36; color: #cfd6e0;
+    border: 1px solid #2a3543; padding: 2px 8px; border-radius: 3px;
+    cursor: pointer; font: inherit; margin-left: 4px; }
+  #obsPanel header button:hover { background: #283544; }
+  #obsPanel header button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #obsCanvas { flex: 1 1 auto; display: block; width: 100%; }
+  #obsTimeRow { padding: 6px 12px; flex: 0 0 auto;
+    border-top: 1px solid #25303d; }
+  #obsTimeSlider { width: 100%; cursor: pointer; }
+  #obsStatus { padding: 4px 12px; font-size: 11px; color: #7a8696;
+    border-top: 1px solid #25303d; flex: 0 0 auto;
+    font-variant-numeric: tabular-nums; }
+  #ui button:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -61,17 +85,40 @@
   <label title="Trace streamlines starting from a regular grid on the cube's −Z face, stepping along each cell's local +Z direction, until they exit any cube face. Always rendered on top of the voxel mesh so they overlay any render mode (heat, domains, axes).">paths <input type="checkbox" id="showPaths"></label>
   <label class="paths-on" title="Number of streamline seeds along each axis on the seeding face. Total streamlines = seeds².">seeds/side <input id="pathSeeds" type="range" min="2" max="20" step="1" value="10"></label>
   <label class="paths-on" title="Streamline integration step as a fraction of the grid spacing. Smaller = smoother curves, more vertices, slightly more CPU; larger = chunkier but cheaper.">step size <input id="pathStepFrac" type="range" min="0.25" max="1.0" step="0.05" value="0.5"></label>
+  <hr>
+  <label title="Edge length, in world units, of the rectilinear grid of test particles dropped in the observer's local xy-plane when 'simulate' is pressed. Each particle sits at the geodesic distance equal to its planar distance from the observer (xy-tangent ray-march).">obs grid size <input id="obsGridSize" type="range" min="0.5" max="20" step="0.25" value="4.5"></label>
+  <label title="Number of test particles along each edge of the grid. Total = N². Cost scales as N²·numSteps.">obs grid N <input id="obsGridN" type="number" min="3" max="25" step="2" value="9"></label>
+  <label title="Observer proper-time step. Each tick advances the observer by dt · e_z(p_obs).">obs dt <input id="obsDt" type="range" min="0.01" max="1.0" step="0.01" value="0.1"></label>
+  <label title="Total observer time to follow. numSteps = totalTime / dt, capped at 1000 to bound memory.">obs total time <input id="obsTotalTime" type="number" min="1" max="200" step="1" value="40"></label>
   <label title="How many alignment steps to run between renders. 1 = step every frame; higher values let you watch fast convergence in real time.">steps/frame <input id="stepsPerFrame" type="number" min="1" max="50" step="1" value="1"></label>
   <div class="row">
     <button id="resetBtn">reset</button>
     <button id="pauseBtn">pause</button>
     <button id="randBtn">randomize</button>
+    <button id="simulateBtn" title="Place an observer at the cube center; let it follow the local +Z (time) direction. A polar grid of test particles is dropped in the observer's xy-plane, then advanced step-by-step to keep them on the observer's instantaneous xy-plane. Their projected paths are drawn on a 2D map (right) colored by local time-warp factor (red=test particle's time runs faster than observer's, blue=slower). Pause the alignment first.">simulate</button>
   </div>
 </div>
 
 <div id="histPanel">
   <h2>+Z direction histogram</h2>
   <canvas id="histCanvas"></canvas>
+</div>
+
+<div id="obsPanel">
+  <header>
+    <h2>OBSERVER VIEW — test-particle worldlines in the observer's local xy-plane</h2>
+    <div>
+      <button id="obsPlayBtn" title="Pause / resume the observer-time stepping. The map keeps showing the trails accumulated so far.">pause</button>
+      <button id="obsStepBtn" title="Advance the observer one tick. Auto-jumps the time slider to the new latest step.">step</button>
+      <button id="closeObsBtn">close</button>
+    </div>
+  </header>
+  <canvas id="obsCanvas"></canvas>
+  <div id="obsTimeRow">
+    <input type="range" id="obsTimeSlider" min="0" max="0" value="0" step="1"
+      title="Scrub through observer time. Drag back to view past states (test-particle trails are truncated, observer marker jumps back along its worldline). Drag to the latest step to re-enable auto-follow.">
+  </div>
+  <div id="obsStatus">step 0/0</div>
 </div>
 
 <div id="stats"></div>
@@ -119,6 +166,11 @@ const params = {
   showPaths: false,
   pathSeeds: 10,
   pathStepFrac: 0.5,
+  // Observer simulation parameters (read at simulate-button click time).
+  obsGridSize: 4.5,            // edge length of the rectilinear test-particle grid
+  obsGridN: 9,                 // particles per edge → total = N²
+  obsDt: 0.10,                 // observer time step
+  obsTotalTime: 40,            // total observer time → numSteps = totalTime / dt
 };
 
 let scene, camera, renderer, controls, cubeMesh;
@@ -137,6 +189,37 @@ const PATH_MAX_STEPS = 1024;                                 // safe for N≤128
 // Reusable scratch for trilinear interpolation (8 corner directions × 3 floats),
 // allocated once so updatePaths' inner loop doesn't churn the GC.
 const _cornerDirs = new Float32Array(24);
+
+// Observer simulation state (null when not running). Created by
+// setupObserverSim, advanced one step per animation frame in animate(),
+// torn down by closeObserverPanel.
+let obsSim = null;
+let obsPaused = false;            // pause/play of observer-time stepping
+let obsViewStep = 0;              // which step the user is currently looking at
+let obsFollowLatest = true;       // slider auto-tracks obsSim.step
+let obsPosHistory = null;         // [[x,y,z], ...] one entry per state (step 0 = initial)
+let obsMapDirty = false;          // 2D map needs a redraw
+let obsCanvas, obsCtx, obsStatusEl, obsPanel, obsPlayBtn, obsTimeSlider;
+let obsMarker, obsMarkerLine, obsMarkerLinePos;
+// Test-particle 3D rendering: small spheres at each particle's current
+// position, plus a LineSegments mesh showing every particle's worldline.
+// Both rebuilt every frame from per-particle posHistory[] arrays.
+let obsTpMesh = null, obsTpPathMesh = null;
+let obsTpPathPos = null, obsTpPathCol = null;
+const _obsTpMatrix = new THREE.Matrix4();
+const _obsTpColor = new THREE.Color();
+const _obsRgb = [0, 0, 0];
+const OBS_RAY_DS_FRAC = 0.25;          // ray-march step as fraction of grid spacing
+const OBS_NUM_STEPS_CAP = 1000;        // hard ceiling on numSteps to bound memory
+const OBS_WORLDLINE_MAX = OBS_NUM_STEPS_CAP + 2;
+// Reusable scratch quaternions / vectors so the observer step doesn't churn GC.
+const _qScratch = [0, 0, 0, 0];
+const _exScratch = [0, 0, 0];
+const _eyScratch = [0, 0, 0];
+const _ezScratch = [0, 0, 0];
+const _exScratch2 = [0, 0, 0];
+const _eyScratch2 = [0, 0, 0];
+const _ezScratch2 = [0, 0, 0];
 let paused = false;
 const _voxelMatrix = new THREE.Matrix4();
 const _voxelColor = new THREE.Color();
@@ -163,6 +246,29 @@ function buildScene() {
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
   const dl = new THREE.DirectionalLight(0xffffff, 0.5);
   dl.position.set(6, 12, 8); scene.add(dl);
+
+  // Observer marker + worldline (visible only while the observer simulation
+  // is running). The marker is a small bright sphere; the worldline is a
+  // LineSegments mesh with skip-on-wrap so PBC jumps don't draw streaks.
+  obsMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.35, 14, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffff66 })
+  );
+  obsMarker.visible = false;
+  obsMarker.frustumCulled = false;
+  obsMarker.renderOrder = 1000;
+  scene.add(obsMarker);
+  obsMarkerLinePos = new Float32Array(OBS_WORLDLINE_MAX * 6);
+  const wlGeom = new THREE.BufferGeometry();
+  wlGeom.setAttribute('position', new THREE.BufferAttribute(obsMarkerLinePos, 3));
+  wlGeom.setDrawRange(0, 0);
+  obsMarkerLine = new THREE.LineSegments(wlGeom, new THREE.LineBasicMaterial({
+    color: 0xffff66, transparent: true, depthTest: false, depthWrite: false,
+  }));
+  obsMarkerLine.visible = false;
+  obsMarkerLine.frustumCulled = false;
+  obsMarkerLine.renderOrder = 1000;
+  scene.add(obsMarkerLine);
 }
 
 // Periodic cube: the 12 edges only (not a triangulated wireframe) so the
@@ -183,6 +289,9 @@ function rebuildCube() {
 // output: (origin, end) pairs for X, Y, Z back-to-back per cell. The color
 // buffer is set once at build time — only positions get rewritten per frame.
 function rebuildGrid() {
+  // An open observer simulation references the about-to-be-replaced
+  // state.quats; close it before swapping the field out from under it.
+  if (obsSim) closeObserverPanel();
   if (lines) {
     scene.remove(lines);
     lineGeom.dispose();
@@ -504,6 +613,706 @@ function applyPathsUI() {
     el.style.display = params.showPaths ? '' : 'none';
 }
 
+// ===========================================================================
+// Observer simulation: a single particle whose worldline follows the local
+// +Z axis everywhere ("time" = local +Z). Around the observer we drop a
+// polar grid of test particles in the observer's instantaneous xy-plane,
+// then advance each one along ITS local +Z by an amount dτ chosen so it
+// lands on the observer's NEW xy-plane (a linearized synchronization). The
+// ratio dτ/dt is the local time-warp factor — we color the test particle's
+// trail by it.
+// ---------------------------------------------------------------------------
+
+// Sample local quaternion at world position (PBC wrap, nearest cell). Writes
+// into the provided 4-array.
+function localQuatAt(pos, out) {
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, inv_s = N / L;
+  let ix = Math.floor((pos[0] + half) * inv_s);
+  let iy = Math.floor((pos[1] + half) * inv_s);
+  let iz = Math.floor((pos[2] + half) * inv_s);
+  ix = ((ix % N) + N) % N;
+  iy = ((iy % N) + N) % N;
+  iz = ((iz % N) + N) % N;
+  const ci = (iz * N + iy) * N + ix;
+  out[0] = state.quats[4*ci    ];
+  out[1] = state.quats[4*ci + 1];
+  out[2] = state.quats[4*ci + 2];
+  out[3] = state.quats[4*ci + 3];
+}
+
+// Compute ROW-of-rotation-matrix style frame axes from a quaternion. Each
+// of ex/ey/ez ends up as the world-frame image of the local +X/+Y/+Z axes.
+function frameFromQuat(q, ex, ey, ez) {
+  const qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+  ex[0] = 1 - 2*(qy*qy + qz*qz);
+  ex[1] = 2*(qx*qy + qz*qw);
+  ex[2] = 2*(qx*qz - qy*qw);
+  ey[0] = 2*(qx*qy - qz*qw);
+  ey[1] = 1 - 2*(qx*qx + qz*qz);
+  ey[2] = 2*(qy*qz + qx*qw);
+  ez[0] = 2*(qx*qz + qy*qw);
+  ez[1] = 2*(qy*qz - qx*qw);
+  ez[2] = 1 - 2*(qx*qx + qy*qy);
+}
+
+function _wrapPosCube(pos, L, half) {
+  pos[0] -= L * Math.floor((pos[0] + half) / L);
+  pos[1] -= L * Math.floor((pos[1] + half) / L);
+  pos[2] -= L * Math.floor((pos[2] + half) / L);
+}
+
+// Initialize obsSim: place observer at the LOGICAL position whose displayed
+// location is the cube center, ray-march to find polar-grid of test particles
+// in observer's xy-plane. Re-clicking simulate after an x/y/z shift therefore
+// drops the observer in a different part of the world (the cell that's now
+// being shown at the displayed center).
+function setupObserverSim() {
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L;
+  const cellS = L / N;
+
+  // displayed = wrap(logical + offsetCells·s); displayed = (0,0,0) ⇒
+  // logical = wrap(-offsetCells·s).
+  const offX = params.offsetCells[0] * cellS;
+  const offY = params.offsetCells[1] * cellS;
+  const offZ = params.offsetCells[2] * cellS;
+  const obsPos = [
+    -offX - L * Math.floor((-offX + half) / L),
+    -offY - L * Math.floor((-offY + half) / L),
+    -offZ - L * Math.floor((-offZ + half) / L),
+  ];
+  localQuatAt(obsPos, _qScratch);
+  frameFromQuat(_qScratch, _exScratch, _eyScratch, _ezScratch);
+
+  const gridSize = Math.max(0.001, +params.obsGridSize);
+  const gridN = Math.max(2, params.obsGridN | 0);
+  const halfGrid = 0.5 * gridSize;
+  const cellSpacing = gridSize / (gridN - 1);
+  const ds = cellS * OBS_RAY_DS_FRAC;
+  const dt = Math.max(0.001, +params.obsDt);
+  const numSteps = Math.min(OBS_NUM_STEPS_CAP, Math.max(1, Math.ceil(params.obsTotalTime / dt)));
+
+  // Rectilinear grid in the observer's local xy-plane: each test point sits
+  // at planar coords (xLocal, yLocal). Its 3D position is obtained by ray-
+  // marching from the observer along (xLocal·ex + yLocal·ey)/r in the local
+  // xy-plane (projecting out the local +Z at each step), for an arc length
+  // equal to r = √(xLocal² + yLocal²).
+  const testPoints = [];
+  for (let iy = 0; iy < gridN; iy++) {
+    const yLocal = -halfGrid + iy * cellSpacing;
+    for (let ix = 0; ix < gridN; ix++) {
+      const xLocal = -halfGrid + ix * cellSpacing;
+      const r = Math.hypot(xLocal, yLocal);
+      let tpx, tpy, tpz;
+      if (r < 1e-8) {
+        // Center cell of the grid — just use observer position.
+        tpx = obsPos[0]; tpy = obsPos[1]; tpz = obsPos[2];
+      } else {
+        const cosT = xLocal / r, sinT = yLocal / r;
+        let dx = cosT * _exScratch[0] + sinT * _eyScratch[0];
+        let dy = cosT * _exScratch[1] + sinT * _eyScratch[1];
+        let dz = cosT * _exScratch[2] + sinT * _eyScratch[2];
+        let px = obsPos[0], py = obsPos[1], pz = obsPos[2];
+        let arc = 0;
+        while (arc < r) {
+          const stepLen = Math.min(ds, r - arc);
+          px += dx * stepLen; py += dy * stepLen; pz += dz * stepLen;
+          arc += stepLen;
+          // Wrap PBC.
+          px -= L * Math.floor((px + half) / L);
+          py -= L * Math.floor((py + half) / L);
+          pz -= L * Math.floor((pz + half) / L);
+          // Re-orient direction: project out local +Z at new pos.
+          localQuatAt([px, py, pz], _qScratch);
+          frameFromQuat(_qScratch, _exScratch2, _eyScratch2, _ezScratch2);
+          const ddot = dx*_ezScratch2[0] + dy*_ezScratch2[1] + dz*_ezScratch2[2];
+          dx -= ddot*_ezScratch2[0];
+          dy -= ddot*_ezScratch2[1];
+          dz -= ddot*_ezScratch2[2];
+          const dlen = Math.hypot(dx, dy, dz);
+          if (dlen > 1e-8) { dx /= dlen; dy /= dlen; dz /= dlen; }
+          else break;
+        }
+        tpx = px; tpy = py; tpz = pz;
+      }
+      testPoints.push({
+        pos: [tpx, tpy, tpz],
+        warp: 1.0,
+        // 2D trail in the observer's xy-frame, indexed by step. Entry 0 is
+        // the initial planar grid coord (xLocal, yLocal).
+        trail: [{ x: xLocal, y: yLocal, w: 1.0 }],
+        // 3D position history (logical/unshifted), indexed by step. Used
+        // by the in-cube dot + worldline rendering. setObsTpTransforms reads
+        // posHistory[obsViewStep] each frame, applies offset+wrap.
+        posHistory: [[tpx, tpy, tpz]],
+        alive: true,
+      });
+    }
+  }
+
+  obsSim = {
+    p_obs: obsPos,
+    e_x: [_exScratch[0], _exScratch[1], _exScratch[2]],
+    e_y: [_eyScratch[0], _eyScratch[1], _eyScratch[2]],
+    e_z: [_ezScratch[0], _ezScratch[1], _ezScratch[2]],
+    t_obs: 0,
+    step: 0,
+    numSteps,
+    dt,
+    testPoints,
+    gridSize,
+    gridN,
+    rMax: gridSize * 0.5 * Math.SQRT2,   // diagonal half-length, for map scale
+  };
+  setupObsTpMeshes();
+  // Per-state observer position log — drives both the worldline mesh
+  // (rebuilt every frame from this with current offset+wrap applied) and
+  // the 3D marker placement when scrubbing the time slider.
+  obsPosHistory = [[obsPos[0], obsPos[1], obsPos[2]]];
+  obsViewStep = 0;
+  obsFollowLatest = true;
+  obsMapDirty = true;
+}
+
+// Advance the observer (and all test particles) one step.
+function stepObserverSim() {
+  if (!obsSim || obsSim.step >= obsSim.numSteps) return;
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L;
+  const dt = obsSim.dt;
+
+  // Local frame at current observer position (sign-fix to match stored e_z
+  // for line-field continuity).
+  localQuatAt(obsSim.p_obs, _qScratch);
+  frameFromQuat(_qScratch, _exScratch, _eyScratch, _ezScratch);
+  const ezOld = obsSim.e_z;
+  let dot = _ezScratch[0]*ezOld[0] + _ezScratch[1]*ezOld[1] + _ezScratch[2]*ezOld[2];
+  if (dot < 0) {
+    _ezScratch[0] = -_ezScratch[0];
+    _ezScratch[1] = -_ezScratch[1];
+    _ezScratch[2] = -_ezScratch[2];
+  }
+
+  // Step observer along the (sign-fixed) local +Z.
+  const p_obs_new = [
+    obsSim.p_obs[0] + dt * _ezScratch[0],
+    obsSim.p_obs[1] + dt * _ezScratch[1],
+    obsSim.p_obs[2] + dt * _ezScratch[2],
+  ];
+  // Cache the unwrapped step for the worldline-segment skip-on-wrap test.
+  const obsStepDx = p_obs_new[0] - obsSim.p_obs[0];
+  const obsStepDy = p_obs_new[1] - obsSim.p_obs[1];
+  const obsStepDz = p_obs_new[2] - obsSim.p_obs[2];
+  _wrapPosCube(p_obs_new, L, half);
+
+  // Fresh frame at the new position; sign-fix again.
+  localQuatAt(p_obs_new, _qScratch);
+  frameFromQuat(_qScratch, _exScratch2, _eyScratch2, _ezScratch2);
+  dot = _ezScratch2[0]*ezOld[0] + _ezScratch2[1]*ezOld[1] + _ezScratch2[2]*ezOld[2];
+  if (dot < 0) {
+    _ezScratch2[0] = -_ezScratch2[0];
+    _ezScratch2[1] = -_ezScratch2[1];
+    _ezScratch2[2] = -_ezScratch2[2];
+  }
+
+  // Parallel-transport observer's xy-frame: rotate (e_x, e_y) by the smallest
+  // rotation that takes the old e_z to the new e_z. This keeps the 2D map
+  // from spuriously rotating just because the cell-frame's x/y axes change
+  // as the observer crosses cell boundaries — only the geometry-induced
+  // rotation (Wigner-style) remains.
+  const ezNew = _ezScratch2;
+  let cosA = ezOld[0]*ezNew[0] + ezOld[1]*ezNew[1] + ezOld[2]*ezNew[2];
+  if (cosA >  1) cosA =  1;
+  if (cosA < -1) cosA = -1;
+  let new_ex_x = obsSim.e_x[0], new_ex_y = obsSim.e_x[1], new_ex_z = obsSim.e_x[2];
+  let new_ey_x = obsSim.e_y[0], new_ey_y = obsSim.e_y[1], new_ey_z = obsSim.e_y[2];
+  if (cosA < 0.99999) {
+    // axis = (old_ez × new_ez) / |...|
+    let ax = ezOld[1]*ezNew[2] - ezOld[2]*ezNew[1];
+    let ay = ezOld[2]*ezNew[0] - ezOld[0]*ezNew[2];
+    let az = ezOld[0]*ezNew[1] - ezOld[1]*ezNew[0];
+    const axisLen = Math.hypot(ax, ay, az);
+    if (axisLen > 1e-8) {
+      ax /= axisLen; ay /= axisLen; az /= axisLen;
+      const angle = Math.acos(cosA);
+      const c = Math.cos(angle), s = Math.sin(angle), oc = 1 - c;
+      // Rodrigues for e_x.
+      let kdv = ax*new_ex_x + ay*new_ex_y + az*new_ex_z;
+      let kxvX = ay*new_ex_z - az*new_ex_y;
+      let kxvY = az*new_ex_x - ax*new_ex_z;
+      let kxvZ = ax*new_ex_y - ay*new_ex_x;
+      const exx = new_ex_x*c + kxvX*s + ax*kdv*oc;
+      const exy = new_ex_y*c + kxvY*s + ay*kdv*oc;
+      const exz = new_ex_z*c + kxvZ*s + az*kdv*oc;
+      // For e_y.
+      kdv = ax*new_ey_x + ay*new_ey_y + az*new_ey_z;
+      kxvX = ay*new_ey_z - az*new_ey_y;
+      kxvY = az*new_ey_x - ax*new_ey_z;
+      kxvZ = ax*new_ey_y - ay*new_ey_x;
+      const eyx = new_ey_x*c + kxvX*s + ax*kdv*oc;
+      const eyy = new_ey_y*c + kxvY*s + ay*kdv*oc;
+      const eyz = new_ey_z*c + kxvZ*s + az*kdv*oc;
+      new_ex_x = exx; new_ex_y = exy; new_ex_z = exz;
+      new_ey_x = eyx; new_ey_y = eyy; new_ey_z = eyz;
+    }
+  }
+  // Re-orthonormalize against new ez to suppress drift.
+  let exDotEz = new_ex_x*ezNew[0] + new_ex_y*ezNew[1] + new_ex_z*ezNew[2];
+  new_ex_x -= exDotEz*ezNew[0];
+  new_ex_y -= exDotEz*ezNew[1];
+  new_ex_z -= exDotEz*ezNew[2];
+  let len = Math.hypot(new_ex_x, new_ex_y, new_ex_z);
+  if (len > 1e-8) { new_ex_x /= len; new_ex_y /= len; new_ex_z /= len; }
+  // ey = ez × ex (right-handed).
+  new_ey_x = ezNew[1]*new_ex_z - ezNew[2]*new_ex_y;
+  new_ey_y = ezNew[2]*new_ex_x - ezNew[0]*new_ex_z;
+  new_ey_z = ezNew[0]*new_ex_y - ezNew[1]*new_ex_x;
+
+  // Update each test particle.
+  let aliveCount = 0;
+  for (const tp of obsSim.testPoints) {
+    if (!tp.alive) continue;
+
+    // Local +Z at test particle (sign-fixed to match observer's new +Z so
+    // both directions are coherent line-field representatives).
+    localQuatAt(tp.pos, _qScratch);
+    frameFromQuat(_qScratch, _exScratch, _eyScratch, _ezScratch);
+    let dot_tt = _ezScratch[0]*ezNew[0] + _ezScratch[1]*ezNew[1] + _ezScratch[2]*ezNew[2];
+    if (dot_tt < 0) {
+      _ezScratch[0] = -_ezScratch[0];
+      _ezScratch[1] = -_ezScratch[1];
+      _ezScratch[2] = -_ezScratch[2];
+      dot_tt = -dot_tt;
+    }
+    // If the test particle's time direction is nearly perpendicular to
+    // observer's, synchronization diverges (1/dot_tt blows up). Drop it.
+    if (dot_tt < 0.05) { tp.alive = false; continue; }
+
+    // Linearized "synchronization": find dτ such that tp + dτ·ez_tp lies on
+    // observer's new xy-plane. Use minimum-image displacement.
+    let dpx = p_obs_new[0] - tp.pos[0];
+    let dpy = p_obs_new[1] - tp.pos[1];
+    let dpz = p_obs_new[2] - tp.pos[2];
+    dpx -= L * Math.round(dpx / L);
+    dpy -= L * Math.round(dpy / L);
+    dpz -= L * Math.round(dpz / L);
+    const numer = dpx*ezNew[0] + dpy*ezNew[1] + dpz*ezNew[2];
+    const dtau = numer / dot_tt;
+
+    // Cap the per-step proper-time motion to keep pathological cells from
+    // teleporting test particles across the cube.
+    const dtauStep = Math.max(-5*dt, Math.min(5*dt, dtau));
+    tp.pos[0] += dtauStep * _ezScratch[0];
+    tp.pos[1] += dtauStep * _ezScratch[1];
+    tp.pos[2] += dtauStep * _ezScratch[2];
+    _wrapPosCube(tp.pos, L, half);
+
+    // Project the new test-particle position onto the observer's NEW
+    // xy-frame (parallel-transported).
+    let dpx2 = tp.pos[0] - p_obs_new[0];
+    let dpy2 = tp.pos[1] - p_obs_new[1];
+    let dpz2 = tp.pos[2] - p_obs_new[2];
+    dpx2 -= L * Math.round(dpx2 / L);
+    dpy2 -= L * Math.round(dpy2 / L);
+    dpz2 -= L * Math.round(dpz2 / L);
+    const x2d = dpx2*new_ex_x + dpy2*new_ex_y + dpz2*new_ex_z;
+    const y2d = dpx2*new_ey_x + dpy2*new_ey_y + dpz2*new_ey_z;
+
+    tp.warp = dtau / dt;     // unclamped warp for visualization
+    tp.trail.push({ x: x2d, y: y2d, w: tp.warp });
+    tp.posHistory.push([tp.pos[0], tp.pos[1], tp.pos[2]]);
+    aliveCount++;
+  }
+
+  // Commit observer state.
+  obsSim.p_obs = p_obs_new;
+  obsSim.e_x = [new_ex_x, new_ex_y, new_ex_z];
+  obsSim.e_y = [new_ey_x, new_ey_y, new_ey_z];
+  obsSim.e_z = [ezNew[0], ezNew[1], ezNew[2]];
+  obsSim.t_obs += dt;
+  obsSim.step++;
+  obsSim.aliveCount = aliveCount;
+  obsPosHistory.push([p_obs_new[0], p_obs_new[1], p_obs_new[2]]);
+}
+
+// Rebuild the worldline LineSegments mesh from obsPosHistory[0..obsViewStep],
+// applying the current offsetCells shift and wrapping into [-L/2, L/2). A
+// segment whose endpoints land on opposite sides of the cube after wrap is
+// dropped, so the worldline cleanly breaks at the wrap boundary like the
+// streamlines do. Cheap to rebuild every frame (~OBS_NUM_STEPS iterations).
+function rebuildObsWorldline() {
+  if (!obsSim || !obsMarkerLine || !obsPosHistory) return;
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, s = L / N;
+  const offX = params.offsetCells[0] * s;
+  const offY = params.offsetCells[1] * s;
+  const offZ = params.offsetCells[2] * s;
+  const wrapJump = half;
+  const positions = obsMarkerLinePos;
+  const upTo = Math.min(obsViewStep, obsPosHistory.length - 1);
+  let segCount = 0;
+  for (let k = 1; k <= upTo; k++) {
+    const p0 = obsPosHistory[k - 1];
+    const p1 = obsPosHistory[k];
+    const x0 = (p0[0] + offX) - L * Math.floor((p0[0] + offX + half) / L);
+    const y0 = (p0[1] + offY) - L * Math.floor((p0[1] + offY + half) / L);
+    const z0 = (p0[2] + offZ) - L * Math.floor((p0[2] + offZ + half) / L);
+    const x1 = (p1[0] + offX) - L * Math.floor((p1[0] + offX + half) / L);
+    const y1 = (p1[1] + offY) - L * Math.floor((p1[1] + offY + half) / L);
+    const z1 = (p1[2] + offZ) - L * Math.floor((p1[2] + offZ + half) / L);
+    if (Math.abs(x1 - x0) > wrapJump ||
+        Math.abs(y1 - y0) > wrapJump ||
+        Math.abs(z1 - z0) > wrapJump) continue;
+    const i = segCount * 6;
+    if (i + 6 > positions.length) break;
+    positions[i    ] = x0; positions[i + 1] = y0; positions[i + 2] = z0;
+    positions[i + 3] = x1; positions[i + 4] = y1; positions[i + 5] = z1;
+    segCount++;
+  }
+  obsMarkerLine.geometry.setDrawRange(0, segCount * 2);
+  obsMarkerLine.geometry.attributes.position.needsUpdate = true;
+}
+
+// Place the 3D observer marker at obsPosHistory[obsViewStep] with the
+// current offsetCells shift+wrap applied.
+function positionObsMarker() {
+  if (!obsSim || !obsMarker || !obsPosHistory) return;
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, s = L / N;
+  const k = Math.max(0, Math.min(obsViewStep, obsPosHistory.length - 1));
+  const p = obsPosHistory[k];
+  const offX = params.offsetCells[0] * s;
+  const offY = params.offsetCells[1] * s;
+  const offZ = params.offsetCells[2] * s;
+  obsMarker.position.set(
+    (p[0] + offX) - L * Math.floor((p[0] + offX + half) / L),
+    (p[1] + offY) - L * Math.floor((p[1] + offY + half) / L),
+    (p[2] + offZ) - L * Math.floor((p[2] + offZ + half) / L),
+  );
+}
+
+// Map a time-warp factor (dτ/dt) to a 3-tuple of normalized RGB floats
+// (writes into out). log2-scaled so w=2 / w=½ are equally far from the
+// white center; clamped at w=4 / w=¼.
+function _warpRgb(w, out) {
+  if (w < 0) { out[0] = 0.59; out[1] = 0.20; out[2] = 0.78; return out; } // violet for retrograde time
+  const t = Math.log2(Math.max(0.05, Math.abs(w))) / 2;
+  const c = Math.max(-1, Math.min(1, t));
+  if (c >= 0) {
+    const v = 1 - c * 0.7;
+    out[0] = 1; out[1] = v; out[2] = v;
+  } else {
+    const v = 1 + c * 0.7;
+    out[0] = v; out[1] = v; out[2] = 1;
+  }
+  return out;
+}
+// Same mapping, formatted as a CSS color string for the 2D canvas.
+function _warpColor(w) {
+  _warpRgb(w, _obsRgb);
+  return 'rgb(' + Math.round(_obsRgb[0]*255) + ',' + Math.round(_obsRgb[1]*255) + ',' + Math.round(_obsRgb[2]*255) + ')';
+}
+
+// Allocate (or recreate) the 3D test-particle dot + path meshes for the
+// current obsSim. Sized to obsSim.testPoints.length × obsSim.numSteps. Both
+// meshes are owned by the scene; updateObsTpMeshes rewrites their per-frame
+// data, closeObserverPanel disposes them.
+function setupObsTpMeshes() {
+  if (!obsSim) return;
+  if (obsTpMesh) {
+    scene.remove(obsTpMesh);
+    obsTpMesh.geometry.dispose();
+    obsTpMesh = null;
+  }
+  if (obsTpPathMesh) {
+    scene.remove(obsTpPathMesh);
+    obsTpPathMesh.geometry.dispose();
+    obsTpPathMesh = null;
+  }
+  const numTPs = obsSim.testPoints.length;
+  const numSteps = obsSim.numSteps;
+  const cellS = params.cubeSize / params.N;
+  const dotRadius = Math.max(0.04, cellS * 0.18);
+
+  // Dots: an InstancedMesh of small spheres, one per test particle. Per-
+  // instance color is set via setColorAt and picked up by MeshBasicMaterial
+  // through the built-in instanceColor attribute.
+  const tpGeo = new THREE.SphereGeometry(dotRadius, 8, 6);
+  const tpMat = new THREE.MeshBasicMaterial();
+  obsTpMesh = new THREE.InstancedMesh(tpGeo, tpMat, numTPs);
+  obsTpMesh.frustumCulled = false;
+  obsTpMesh.renderOrder = 1001;
+  for (let i = 0; i < numTPs; i++) {
+    obsTpMesh.setColorAt(i, _obsTpColor.set(0xffffff));
+  }
+  obsTpMesh.visible = false;     // openObserverPanel turns it on
+  scene.add(obsTpMesh);
+
+  // Worldline LineSegments: one segment per (particle, step). Buffer sized
+  // for the worst case; setDrawRange caps how many segments are drawn each
+  // frame. Per-vertex color encodes the segment's endpoint warp factor.
+  const maxVerts = numTPs * numSteps * 2;
+  const pathPos = new Float32Array(maxVerts * 3);
+  const pathCol = new Float32Array(maxVerts * 3);
+  const pathGeom = new THREE.BufferGeometry();
+  pathGeom.setAttribute('position', new THREE.BufferAttribute(pathPos, 3));
+  pathGeom.setAttribute('color',    new THREE.BufferAttribute(pathCol, 3));
+  pathGeom.setDrawRange(0, 0);
+  obsTpPathMesh = new THREE.LineSegments(pathGeom, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true,
+    depthTest: false, depthWrite: false,
+  }));
+  obsTpPathMesh.frustumCulled = false;
+  obsTpPathMesh.renderOrder = 1000;
+  obsTpPathMesh.visible = false;
+  scene.add(obsTpPathMesh);
+  obsTpPathPos = pathPos;
+  obsTpPathCol = pathCol;
+}
+
+// Per-frame: place each dot at its posHistory[obsViewStep] (offset+wrapped),
+// color it by warp; rebuild path segments for k = 1..obsViewStep.
+function updateObsTpMeshes() {
+  if (!obsSim || !obsTpMesh || !obsTpPathMesh) return;
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, s = L / N;
+  const offX = params.offsetCells[0] * s;
+  const offY = params.offsetCells[1] * s;
+  const offZ = params.offsetCells[2] * s;
+  const wrapJump = half;
+
+  // Dots.
+  const TPs = obsSim.testPoints;
+  for (let i = 0; i < TPs.length; i++) {
+    const tp = TPs[i];
+    const idx = Math.min(obsViewStep, tp.posHistory.length - 1);
+    const p = tp.posHistory[idx];
+    const dx = (p[0] + offX) - L * Math.floor((p[0] + offX + half) / L);
+    const dy = (p[1] + offY) - L * Math.floor((p[1] + offY + half) / L);
+    const dz = (p[2] + offZ) - L * Math.floor((p[2] + offZ + half) / L);
+    _obsTpMatrix.makeTranslation(dx, dy, dz);
+    obsTpMesh.setMatrixAt(i, _obsTpMatrix);
+    const aliveAtView = obsViewStep < tp.trail.length;
+    if (aliveAtView) {
+      _warpRgb(tp.trail[Math.min(obsViewStep, tp.trail.length - 1)].w, _obsRgb);
+      _obsTpColor.setRGB(_obsRgb[0], _obsRgb[1], _obsRgb[2]);
+    } else {
+      _obsTpColor.setRGB(0.27, 0.27, 0.27);
+    }
+    obsTpMesh.setColorAt(i, _obsTpColor);
+  }
+  obsTpMesh.instanceMatrix.needsUpdate = true;
+  if (obsTpMesh.instanceColor) obsTpMesh.instanceColor.needsUpdate = true;
+
+  // Path segments. One segment per (particle, step k=1..effEnd), skipping
+  // any that crossed a PBC wrap boundary (so worldlines cleanly break at
+  // the cube faces, just like the observer worldline and streamlines).
+  const cap = obsTpPathPos.length;
+  let segCount = 0;
+  for (let i = 0; i < TPs.length; i++) {
+    const tp = TPs[i];
+    const upTo = Math.min(obsViewStep, tp.posHistory.length - 1);
+    for (let k = 1; k <= upTo; k++) {
+      const p0 = tp.posHistory[k - 1];
+      const p1 = tp.posHistory[k];
+      const x0 = (p0[0] + offX) - L * Math.floor((p0[0] + offX + half) / L);
+      const y0 = (p0[1] + offY) - L * Math.floor((p0[1] + offY + half) / L);
+      const z0 = (p0[2] + offZ) - L * Math.floor((p0[2] + offZ + half) / L);
+      const x1 = (p1[0] + offX) - L * Math.floor((p1[0] + offX + half) / L);
+      const y1 = (p1[1] + offY) - L * Math.floor((p1[1] + offY + half) / L);
+      const z1 = (p1[2] + offZ) - L * Math.floor((p1[2] + offZ + half) / L);
+      if (Math.abs(x1 - x0) > wrapJump ||
+          Math.abs(y1 - y0) > wrapJump ||
+          Math.abs(z1 - z0) > wrapJump) continue;
+      const off = segCount * 6;
+      if (off + 6 > cap) break;
+      obsTpPathPos[off    ] = x0; obsTpPathPos[off + 1] = y0; obsTpPathPos[off + 2] = z0;
+      obsTpPathPos[off + 3] = x1; obsTpPathPos[off + 4] = y1; obsTpPathPos[off + 5] = z1;
+      _warpRgb(tp.trail[Math.min(k, tp.trail.length - 1)].w, _obsRgb);
+      const r = _obsRgb[0], gn = _obsRgb[1], bl = _obsRgb[2];
+      obsTpPathCol[off    ] = r; obsTpPathCol[off + 1] = gn; obsTpPathCol[off + 2] = bl;
+      obsTpPathCol[off + 3] = r; obsTpPathCol[off + 4] = gn; obsTpPathCol[off + 5] = bl;
+      segCount++;
+    }
+  }
+  obsTpPathMesh.geometry.setDrawRange(0, segCount * 2);
+  obsTpPathMesh.geometry.attributes.position.needsUpdate = true;
+  obsTpPathMesh.geometry.attributes.color.needsUpdate = true;
+}
+
+function drawObserverMap() {
+  if (!obsSim || !obsCtx || !obsCanvas) return;
+  const w = obsCanvas.width, h = obsCanvas.height;
+  obsCtx.fillStyle = '#0a0d12';
+  obsCtx.fillRect(0, 0, w, h);
+
+  // Map extent: full grid corners (gridSize/2·√2) plus a margin.
+  const mapHalf = obsSim.rMax * 1.15;
+  const scale = Math.min(w, h) * 0.46 / mapHalf;
+  const cx = w / 2, cy = h / 2;
+
+  // Axes.
+  obsCtx.strokeStyle = '#1a232f';
+  obsCtx.lineWidth = 1;
+  obsCtx.beginPath();
+  obsCtx.moveTo(0, cy); obsCtx.lineTo(w, cy);
+  obsCtx.moveTo(cx, 0); obsCtx.lineTo(cx, h);
+  obsCtx.stroke();
+  // Initial grid: square outline + faint cell lattice. The lattice marks
+  // the test particles' starting positions in the observer's xy-plane.
+  const gh = obsSim.gridSize * 0.5;
+  const gN = obsSim.gridN;
+  obsCtx.strokeStyle = '#1a232f';
+  obsCtx.beginPath();
+  for (let k = 0; k < gN; k++) {
+    const t = -gh + k * (obsSim.gridSize / (gN - 1));
+    obsCtx.moveTo(cx + t * scale, cy - gh * scale);
+    obsCtx.lineTo(cx + t * scale, cy + gh * scale);
+    obsCtx.moveTo(cx - gh * scale, cy + t * scale);
+    obsCtx.lineTo(cx + gh * scale, cy + t * scale);
+  }
+  obsCtx.stroke();
+  obsCtx.strokeStyle = '#2a3543';
+  obsCtx.strokeRect(cx - gh * scale, cy - gh * scale,
+                    obsSim.gridSize * scale, obsSim.gridSize * scale);
+
+  // Trails up to obsViewStep. trail[k] = projected position at step k, so
+  // we draw segments trail[i-1]→trail[i] for i = 1..effEnd, where effEnd
+  // is min(obsViewStep, trail.length - 1). A test particle that died
+  // before obsViewStep has a shorter trail; we draw all of it.
+  obsCtx.lineWidth = 1.4;
+  for (const tp of obsSim.testPoints) {
+    const effEnd = Math.min(obsViewStep, tp.trail.length - 1);
+    for (let i = 1; i <= effEnd; i++) {
+      const p0 = tp.trail[i - 1], p1 = tp.trail[i];
+      obsCtx.strokeStyle = _warpColor(p1.w);
+      obsCtx.beginPath();
+      obsCtx.moveTo(cx + p0.x * scale, cy + p0.y * scale);
+      obsCtx.lineTo(cx + p1.x * scale, cy + p1.y * scale);
+      obsCtx.stroke();
+    }
+  }
+  // Endpoint dots: alive-at-view-step ⇔ trail has an entry at obsViewStep.
+  for (const tp of obsSim.testPoints) {
+    if (tp.trail.length === 0) continue;
+    const aliveHere = obsViewStep < tp.trail.length;
+    const idx = aliveHere ? obsViewStep : tp.trail.length - 1;
+    const pt = tp.trail[idx];
+    obsCtx.fillStyle = aliveHere ? _warpColor(pt.w) : '#444';
+    obsCtx.beginPath();
+    obsCtx.arc(cx + pt.x * scale, cy + pt.y * scale, aliveHere ? 2.5 : 1.5, 0, 2*Math.PI);
+    obsCtx.fill();
+  }
+
+  // Observer at center.
+  obsCtx.fillStyle = '#ffff66';
+  obsCtx.beginPath();
+  obsCtx.arc(cx, cy, 4, 0, 2*Math.PI);
+  obsCtx.fill();
+
+  // Status line. "view" reports the slider position; "computed" reports
+  // how many steps the simulation has actually run so far.
+  if (obsStatusEl) {
+    let aliveAtView = 0;
+    for (const tp of obsSim.testPoints) {
+      if (obsViewStep < tp.trail.length) aliveAtView++;
+    }
+    const tau = obsViewStep * obsSim.dt;
+    obsStatusEl.textContent =
+      `view step ${obsViewStep} (τ=${tau.toFixed(2)}) · computed ${obsSim.step}/${obsSim.numSteps} · `
+      + `${aliveAtView}/${obsSim.testPoints.length} alive at view  ·  red = test-particle time runs faster, blue = slower`;
+  }
+}
+
+// Run one observer-time tick. If the user is auto-following the latest step
+// (slider at max), bump the view step too.
+function advanceObserverOneTick() {
+  if (!obsSim || obsSim.step >= obsSim.numSteps) return;
+  stepObserverSim();
+  if (obsFollowLatest) obsViewStep = obsSim.step;
+  syncObsTimeSlider();
+  obsMapDirty = true;
+}
+
+// Mirror obsSim.step / obsViewStep into the slider's max + value attributes.
+function syncObsTimeSlider() {
+  if (!obsSim || !obsTimeSlider) return;
+  obsTimeSlider.max = String(obsSim.step);
+  if (obsFollowLatest) obsTimeSlider.value = String(obsViewStep);
+}
+
+// Slider event handler: clamp, mark dirty, update follow flag.
+function setObsViewStep(v) {
+  if (!obsSim) return;
+  obsViewStep = Math.max(0, Math.min(obsSim.step, v | 0));
+  obsFollowLatest = (obsViewStep === obsSim.step);
+  obsMapDirty = true;
+}
+
+function openObserverPanel() {
+  obsPanel.classList.add('active');
+  if (obsMarker) obsMarker.visible = true;
+  if (obsMarkerLine) obsMarkerLine.visible = true;
+  if (obsTpMesh) obsTpMesh.visible = true;
+  if (obsTpPathMesh) obsTpPathMesh.visible = true;
+  // Start paused: the simulation is staged (test particles placed, observer
+  // at the displayed-center cell) but no ticks are taken until the user
+  // explicitly hits play or step.
+  obsPaused = true;
+  if (obsPlayBtn) obsPlayBtn.textContent = 'play';
+  syncObsTimeSlider();
+  resizeAll();
+  rebuildObsWorldline();
+  positionObsMarker();
+  updateObsTpMeshes();
+  drawObserverMap();
+  obsMapDirty = false;
+}
+function closeObserverPanel() {
+  obsPanel.classList.remove('active');
+  obsSim = null;
+  obsPosHistory = null;
+  if (obsMarker) obsMarker.visible = false;
+  if (obsMarkerLine) {
+    obsMarkerLine.visible = false;
+    obsMarkerLine.geometry.setDrawRange(0, 0);
+  }
+  if (obsTpMesh) {
+    scene.remove(obsTpMesh);
+    obsTpMesh.geometry.dispose();
+    obsTpMesh = null;
+  }
+  if (obsTpPathMesh) {
+    scene.remove(obsTpPathMesh);
+    obsTpPathMesh.geometry.dispose();
+    obsTpPathMesh = null;
+  }
+  obsTpPathPos = null;
+  obsTpPathCol = null;
+  if (obsTimeSlider) {
+    obsTimeSlider.max = '0';
+    obsTimeSlider.value = '0';
+  }
+  resizeAll();
+}
+
+// Resize the main 3D viewport and (if active) the observer canvas. Replaces
+// the simple window-resize handler that was here before.
+function resizeAll() {
+  const obsActive = !!obsSim;
+  const mainW = obsActive ? Math.floor(innerWidth / 2) : innerWidth;
+  renderer.setSize(mainW, innerHeight);
+  camera.aspect = mainW / innerHeight;
+  camera.updateProjectionMatrix();
+  if (obsActive && obsCanvas) {
+    const r = obsCanvas.getBoundingClientRect();
+    obsCanvas.width  = Math.max(1, Math.floor(r.width));
+    obsCanvas.height = Math.max(1, Math.floor(r.height));
+    drawObserverMap();
+  }
+}
+
 // Set each voxel's per-instance matrix to scale·translate. Cheap (one matrix
 // per cell) so safe to call from a slider's input event whenever voxelScale
 // or the grid spacing changes.
@@ -615,6 +1424,24 @@ function animate() {
       }
     }
   }
+  if (obsSim) {
+    // Auto-step while alignment+observer are both un-paused. (The "step"
+    // button calls advanceObserverOneTick directly.)
+    if (paused && !obsPaused && obsSim.step < obsSim.numSteps) {
+      advanceObserverOneTick();
+    }
+    // Worldline + 3D marker + test-particle meshes rebuild every frame:
+    // cheap (~num_steps × num_particles segment writes), and that way an
+    // x/y/z cube shift or a slider scrub takes effect immediately without
+    // separate dirty flags for them.
+    rebuildObsWorldline();
+    positionObsMarker();
+    updateObsTpMeshes();
+    if (obsMapDirty) {
+      drawObserverMap();
+      obsMapDirty = false;
+    }
+  }
   // Fill +Z directions first — they feed both the histogram and the
   // domain-mode voxel coloring (hue from azimuth, lightness from elevation).
   fillZDirections(state, dirsBuf);
@@ -652,11 +1479,7 @@ function animate() {
   }
 }
 
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+addEventListener('resize', resizeAll);
 
 buildScene();
 rebuildCube();
@@ -692,6 +1515,10 @@ bindRange('misalignCap', 'misalignCap');
 bindRange('alphaGamma', 'alphaGamma');
 bindRange('pathSeeds', 'pathSeeds');
 bindRange('pathStepFrac', 'pathStepFrac');
+bindRange('obsGridSize', 'obsGridSize');
+bindNumber('obsGridN', 'obsGridN');
+bindRange('obsDt', 'obsDt');
+bindNumber('obsTotalTime', 'obsTotalTime');
 
 const showPathsEl = document.getElementById('showPaths');
 showPathsEl.checked = params.showPaths;
@@ -717,11 +1544,43 @@ document.getElementById('resetBtn').onclick = () => rebuildGrid();
 document.getElementById('pauseBtn').onclick = (e) => {
   paused = !paused;
   e.target.textContent = paused ? 'play' : 'pause';
+  document.getElementById('simulateBtn').disabled = !paused;
+  // Closing the observer panel on un-pause avoids the surprising case where
+  // the alignment field starts mutating under a running observer simulation.
+  if (!paused && obsSim) closeObserverPanel();
 };
 document.getElementById('randBtn').onclick = () => {
   randomizeAlignGrid(state);
   if (gpuAligner) gpuAligner.upload(state.quats);
 };
+
+// Observer panel wiring.
+obsPanel = document.getElementById('obsPanel');
+obsCanvas = document.getElementById('obsCanvas');
+obsCtx = obsCanvas.getContext('2d');
+obsStatusEl = document.getElementById('obsStatus');
+obsPlayBtn = document.getElementById('obsPlayBtn');
+obsTimeSlider = document.getElementById('obsTimeSlider');
+const simulateBtn = document.getElementById('simulateBtn');
+simulateBtn.disabled = !paused;
+simulateBtn.onclick = () => {
+  if (!paused) return;
+  setupObserverSim();
+  openObserverPanel();
+};
+document.getElementById('closeObsBtn').onclick = closeObserverPanel;
+obsPlayBtn.onclick = () => {
+  obsPaused = !obsPaused;
+  obsPlayBtn.textContent = obsPaused ? 'play' : 'pause';
+};
+document.getElementById('obsStepBtn').onclick = () => {
+  // Manual step always lands at the new latest state (re-enables follow).
+  obsFollowLatest = true;
+  advanceObserverOneTick();
+};
+obsTimeSlider.addEventListener('input', () => {
+  setObsViewStep(parseInt(obsTimeSlider.value, 10));
+});
 
 // GPU toggle: switching off pulls the latest field back from the texture
 // into state.quats so subsequent CPU stepAlign continues from the right
