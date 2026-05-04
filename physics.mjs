@@ -22,11 +22,22 @@ export const DEFAULTS = {
   //                       factor (water doesn't care about orientation; it
   //                       also receives no torque). Counts are split between
   //                       nMolecules (head+tail pairs) and nWaters.
-  config: 'head_tail_water',
+  config: 'sheet',
 
   // ── shared parameters (apply to every config) ─────────────────────────
+  // Container shape:
+  //   'sphere' — radial inward wall force (wallK), positions free in 3-space.
+  //   'cube'   — periodic boundary conditions on a [-L/2, L/2)³ cube of edge
+  //              L = cubeSize. No wall force; pair displacements use the
+  //              minimum-image convention (each axis: dx -= L · round(dx/L)),
+  //              and positions wrap on each step. The spatial hash uses
+  //              cubeSize/cutoff cells per axis with toroidal neighbor
+  //              lookup, so cubeSize should be an integer multiple of cutoff
+  //              ≥ 3 (default 18 / 3 = 6 cells/axis).
+  container: 'cube',
   sphereR: 9,
-  damping: 0.958,
+  cubeSize: 18,
+  damping: 0.973,
   wallK: 0.1,
   forceCap: 50,
   // Interaction cutoff: pair energies are multiplied by a smooth mask m(d)
@@ -42,10 +53,10 @@ export const DEFAULTS = {
   // repulsion at small d (since -1/d × negative = +positive/d). Likewise
   // a negative `attraction` makes the well at d_peak an energy minimum.
   in_plane_repulsion:   -0.6,
-  orthogonal_repulsion: -1.2,
-  attraction:           -1.2,
-  d_peak:                0.4,
-  bend:                  0.7,
+  orthogonal_repulsion: -0.1,
+  attraction:            0.0,
+  d_peak:                0.5,
+  bend:                  0.0,
 
   // ── 'head_tail' config parameters ─────────────────────────────────────
   // Sign convention for *_repulsion / *_attraction: negative numbers give
@@ -150,6 +161,8 @@ export function setupHeadTail(blocks, p) {
     blocks[i].bond_outer = null;
   }
   const off = (p.bond_distance ?? 0.5);
+  const isCube = p.container === 'cube';
+  const L = isCube ? p.cubeSize : 0;
   for (let i = 0; i < half; i++) {
     const head = blocks[i];
     const tail = blocks[half + i];
@@ -158,6 +171,11 @@ export function setupHeadTail(blocks, p) {
     tail.pos[0] = head.pos[0] + (Math.random() * 2 - 1) * off;
     tail.pos[1] = head.pos[1] + (Math.random() * 2 - 1) * off;
     tail.pos[2] = head.pos[2] + (Math.random() * 2 - 1) * off;
+    if (isCube) {
+      tail.pos[0] = _wrap1D(tail.pos[0], L);
+      tail.pos[1] = _wrap1D(tail.pos[1], L);
+      tail.pos[2] = _wrap1D(tail.pos[2], L);
+    }
   }
 }
 
@@ -175,6 +193,8 @@ export function setupHeadTailWater(blocks, p) {
     blocks[i].bond_outer = null;
   }
   const off = (p.bond_distance ?? 0.5);
+  const isCube = p.container === 'cube';
+  const L = isCube ? p.cubeSize : 0;
   for (let i = 0; i < M; i++) {
     const head = blocks[i];
     const tail = blocks[M + i];
@@ -183,6 +203,11 @@ export function setupHeadTailWater(blocks, p) {
     tail.pos[0] = head.pos[0] + (Math.random() * 2 - 1) * off;
     tail.pos[1] = head.pos[1] + (Math.random() * 2 - 1) * off;
     tail.pos[2] = head.pos[2] + (Math.random() * 2 - 1) * off;
+    if (isCube) {
+      tail.pos[0] = _wrap1D(tail.pos[0], L);
+      tail.pos[1] = _wrap1D(tail.pos[1], L);
+      tail.pos[2] = _wrap1D(tail.pos[2], L);
+    }
   }
 }
 
@@ -221,7 +246,24 @@ export function setupHeadBodyTail(blocks, p) {
     tail.pos[0] = body.pos[0] - dx * off;
     tail.pos[1] = body.pos[1] - dy * off;
     tail.pos[2] = body.pos[2] - dz * off;
+    if (p.container === 'cube') {
+      const L = p.cubeSize;
+      body.pos[0] = _wrap1D(body.pos[0], L);
+      body.pos[1] = _wrap1D(body.pos[1], L);
+      body.pos[2] = _wrap1D(body.pos[2], L);
+      tail.pos[0] = _wrap1D(tail.pos[0], L);
+      tail.pos[1] = _wrap1D(tail.pos[1], L);
+      tail.pos[2] = _wrap1D(tail.pos[2], L);
+    }
   }
+}
+
+// Map x into [-L/2, L/2) by subtracting the integer multiple of L closest to
+// putting it there. Used for both absolute-position wrapping (after the
+// integration step) and minimum-image displacement wrapping (in pair
+// functions). Both reduce to the same algebraic form.
+function _wrap1D(x, L) {
+  return x - L * Math.floor((x + 0.5 * L) / L);
 }
 
 // Rotate v by quaternion q.
@@ -380,6 +422,12 @@ function applyPairSheet(a, b, p) {
   _r[0] = b.pos[0] - a.pos[0];
   _r[1] = b.pos[1] - a.pos[1];
   _r[2] = b.pos[2] - a.pos[2];
+  if (p.container === 'cube') {
+    const L = p.cubeSize;
+    _r[0] = _wrap1D(_r[0], L);
+    _r[1] = _wrap1D(_r[1], L);
+    _r[2] = _wrap1D(_r[2], L);
+  }
   // Cheap reject before the sqrt: d² > cutoff² ⇒ mask is zero anyway.
   const d2 = _r[0]*_r[0] + _r[1]*_r[1] + _r[2]*_r[2];
   if (d2 > p.cutoff * p.cutoff) return 0;
@@ -442,9 +490,15 @@ function applyPairSheet(a, b, p) {
 // parameters and both align block.direction with their bond_dir, which is
 // consistent because the chain is colinear at equilibrium).
 function applyBondForce(outer, inner, p) {
-  const rx = outer.pos[0] - inner.pos[0];
-  const ry = outer.pos[1] - inner.pos[1];
-  const rz = outer.pos[2] - inner.pos[2];
+  let rx = outer.pos[0] - inner.pos[0];
+  let ry = outer.pos[1] - inner.pos[1];
+  let rz = outer.pos[2] - inner.pos[2];
+  if (p.container === 'cube') {
+    const L = p.cubeSize;
+    rx = _wrap1D(rx, L);
+    ry = _wrap1D(ry, L);
+    rz = _wrap1D(rz, L);
+  }
   const d2 = rx*rx + ry*ry + rz*rz;
   if (d2 < 1e-8) {
     const k = 5;
@@ -497,9 +551,15 @@ function applyPairHeadTail(a, b, p) {
   // Bonded? Handled separately by applyBondForce in stepBlocks.
   if (a.bond_inner === b || a.bond_outer === b) return 0;
 
-  const rx = b.pos[0] - a.pos[0];
-  const ry = b.pos[1] - a.pos[1];
-  const rz = b.pos[2] - a.pos[2];
+  let rx = b.pos[0] - a.pos[0];
+  let ry = b.pos[1] - a.pos[1];
+  let rz = b.pos[2] - a.pos[2];
+  if (p.container === 'cube') {
+    const L = p.cubeSize;
+    rx = _wrap1D(rx, L);
+    ry = _wrap1D(ry, L);
+    rz = _wrap1D(rz, L);
+  }
   const d2 = rx*rx + ry*ry + rz*rz;
   if (d2 > p.cutoff * p.cutoff) return 0;
   if (d2 < 1e-8) {
@@ -557,9 +617,15 @@ function applyPairHeadTail(a, b, p) {
 function applyPairHeadBodyTail(a, b, p) {
   if (a.bond_inner === b || a.bond_outer === b) return 0;
 
-  const rx = b.pos[0] - a.pos[0];
-  const ry = b.pos[1] - a.pos[1];
-  const rz = b.pos[2] - a.pos[2];
+  let rx = b.pos[0] - a.pos[0];
+  let ry = b.pos[1] - a.pos[1];
+  let rz = b.pos[2] - a.pos[2];
+  if (p.container === 'cube') {
+    const L = p.cubeSize;
+    rx = _wrap1D(rx, L);
+    ry = _wrap1D(ry, L);
+    rz = _wrap1D(rz, L);
+  }
   const d2 = rx*rx + ry*ry + rz*rz;
   if (d2 > p.cutoff * p.cutoff) return 0;
   if (d2 < 1e-8) {
@@ -631,9 +697,15 @@ function applyPairHeadTailWater(a, b, p) {
   const bIsW = b.type === 2;
   if (!aIsW && !bIsW) return applyPairHeadTail(a, b, p);
 
-  const rx = b.pos[0] - a.pos[0];
-  const ry = b.pos[1] - a.pos[1];
-  const rz = b.pos[2] - a.pos[2];
+  let rx = b.pos[0] - a.pos[0];
+  let ry = b.pos[1] - a.pos[1];
+  let rz = b.pos[2] - a.pos[2];
+  if (p.container === 'cube') {
+    const L = p.cubeSize;
+    rx = _wrap1D(rx, L);
+    ry = _wrap1D(ry, L);
+    rz = _wrap1D(rz, L);
+  }
   const d2 = rx*rx + ry*ry + rz*rz;
   if (d2 > p.cutoff * p.cutoff) return 0;
   if (d2 < 1e-8) {
@@ -677,7 +749,9 @@ function applyPairHeadTailWater(a, b, p) {
 }
 
 // Wall: U_wall = wallK / (R - |pos|). Repels inward, blows up at the wall.
+// Cube container is periodic — no wall force; positions wrap in stepBlocks.
 export function applyWall(b, p) {
+  if (p.container === 'cube') return;
   const r = Math.hypot(b.pos[0], b.pos[1], b.pos[2]);
   if (r < 1e-6) return;
   const margin = p.sphereR - r;
@@ -730,7 +804,19 @@ export function stepBlocks(blocks, dt, p) {
 
   // Bin blocks into cells of size = cutoff. Track both the cell index per
   // block and the per-cell index list so we can iterate cells in any order.
-  const cellSize = p.cutoff;
+  // Cube container: cells per axis = floor(cubeSize / cutoff) (so cellSize ≥
+  // cutoff, ensuring non-adjacent cells are out of range), and cell indices
+  // are wrapped modulo nCellsPerAxis. nCellsPerAxis must be ≥ 3 for the
+  // forward-13 neighbor scheme to avoid double-counting under wrap; the
+  // user-facing default 18/3 = 6 satisfies this comfortably.
+  const isCube = p.container === 'cube';
+  const L = isCube ? p.cubeSize : 0;
+  let cellSize = p.cutoff;
+  let nCellsPerAxis = 0;
+  if (isCube) {
+    nCellsPerAxis = Math.max(3, Math.floor(L / p.cutoff));
+    cellSize = L / nCellsPerAxis;
+  }
   const inv_cell = 1 / cellSize;
   const grid = new Map();              // packed cell key  →  number[] of block indices
   const cellsCx = [];                  // parallel arrays for cell decode without string parsing
@@ -740,9 +826,14 @@ export function stepBlocks(blocks, dt, p) {
   const N = blocks.length;
   for (let i = 0; i < N; i++) {
     const pos = blocks[i].pos;
-    const cx = Math.floor(pos[0] * inv_cell);
-    const cy = Math.floor(pos[1] * inv_cell);
-    const cz = Math.floor(pos[2] * inv_cell);
+    let cx = Math.floor(pos[0] * inv_cell);
+    let cy = Math.floor(pos[1] * inv_cell);
+    let cz = Math.floor(pos[2] * inv_cell);
+    if (isCube) {
+      cx = ((cx % nCellsPerAxis) + nCellsPerAxis) % nCellsPerAxis;
+      cy = ((cy % nCellsPerAxis) + nCellsPerAxis) % nCellsPerAxis;
+      cz = ((cz % nCellsPerAxis) + nCellsPerAxis) % nCellsPerAxis;
+    }
     const key = _packCell(cx, cy, cz);
     let cell = grid.get(key);
     if (cell === undefined) {
@@ -773,7 +864,13 @@ export function stepBlocks(blocks, dt, p) {
     // (b) cross-cell pairs to forward neighbors
     for (let o = 0; o < _FORWARD_OFFSETS.length; o++) {
       const off = _FORWARD_OFFSETS[o];
-      const ncell = grid.get(_packCell(cx + off[0], cy + off[1], cz + off[2]));
+      let nx = cx + off[0], ny = cy + off[1], nz = cz + off[2];
+      if (isCube) {
+        nx = ((nx % nCellsPerAxis) + nCellsPerAxis) % nCellsPerAxis;
+        ny = ((ny % nCellsPerAxis) + nCellsPerAxis) % nCellsPerAxis;
+        nz = ((nz % nCellsPerAxis) + nCellsPerAxis) % nCellsPerAxis;
+      }
+      const ncell = grid.get(_packCell(nx, ny, nz));
       if (ncell === undefined) continue;
       for (let ii = 0; ii < cell.length; ii++) {
         const a = blocks[cell[ii]];
@@ -805,6 +902,11 @@ export function stepBlocks(blocks, dt, p) {
       b.vel[k] = (b.vel[k] + b.force[k] * dt) * damp;
       b.pos[k] += b.vel[k] * dt;
       b.ang[k] = (b.ang[k] + b.torque[k] * dt) * damp;
+    }
+    if (isCube) {
+      b.pos[0] = _wrap1D(b.pos[0], L);
+      b.pos[1] = _wrap1D(b.pos[1], L);
+      b.pos[2] = _wrap1D(b.pos[2], L);
     }
 
     // Quaternion exponential update for world-frame angular velocity.
@@ -847,4 +949,14 @@ export function randomPointInBall(R) {
     const z = (Math.random()*2 - 1) * R;
     if (x*x + y*y + z*z <= R*R) return [x, y, z];
   }
+}
+// Uniform random point in [-L/2, L/2)³. Used to seed positions for the
+// periodic-cube container.
+export function randomPointInBox(L) {
+  const h = 0.5 * L;
+  return [
+    (Math.random()*2 - 1) * h,
+    (Math.random()*2 - 1) * h,
+    (Math.random()*2 - 1) * h,
+  ];
 }

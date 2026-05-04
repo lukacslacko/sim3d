@@ -8,8 +8,17 @@
     font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
   #ui { position: fixed; top: 10px; left: 10px; padding: 10px 12px;
     background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 6px;
-    backdrop-filter: blur(6px); min-width: 280px; max-height: calc(100vh - 20px);
+    backdrop-filter: blur(6px); min-width: 280px; max-height: calc(100vh - 310px);
     overflow-y: auto; }
+  /* Direction histogram panel — below the UI on the left, above #stats. */
+  #histPanel { position: fixed; left: 10px; bottom: 40px; width: 240px;
+    padding: 8px 10px; background: rgba(15,20,28,0.78);
+    border: 1px solid #25303d; border-radius: 6px; backdrop-filter: blur(6px);
+    display: flex; flex-direction: column; }
+  #histPanel h2 { font-size: 11px; margin: 0 0 6px; color: #9ad8ff;
+    letter-spacing: .04em; font-weight: normal; }
+  #histCanvas { display: block; width: 220px; height: 220px;
+    background: transparent; }
   #ui h1 { font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; color: #9ad8ff; }
   #ui label { display: flex; justify-content: space-between; gap: 8px;
     align-items: center; margin: 4px 0; }
@@ -34,24 +43,29 @@
 <div id="ui">
   <h1>SIM3D — block affinity</h1>
   <label title="Which block-type configuration is active. Switching rebuilds blocks.&#10;&#10;sheet: single block type with orientation-rich affinity.&#10;head_tail: 2-block chains (head ↔ tail). Pair params: head_head_*, tail_tail_*, unbonded_ht_attraction.&#10;head_body_tail: 3-block chains (head ↔ body ↔ tail). 6 unbonded pair types — hbt_{hh,bb,tt,hb,ht,bt}_* — each with its own distance/repulsion/attraction.&#10;head_tail_water: head_tail + a third bondless, orientation-blind 'water' type. Three water pair models (W↔W, W↔H, W↔T). Two count sliders: nMolecules (head+tail pairs) and nWaters.">config <select id="config">
-    <option value="head_tail_water">head_tail_water</option>
-    <option value="head_body_tail">head_body_tail</option>
-    <option value="head_tail">head_tail</option>
     <option value="sheet">sheet</option>
+    <option value="head_tail">head_tail</option>
+    <option value="head_body_tail">head_body_tail</option>
+    <option value="head_tail_water">head_tail_water</option>
   </select></label>
   <hr>
-  <label class="blocks-single" title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="1000"></label>
+  <label class="blocks-single" title="Total number of blocks. In head_tail mode the first half become heads and the second half tails (so an even count makes equal numbers of each).">blocks <input id="nBlocks" type="number" min="1" max="10000" step="1" value="2000"></label>
   <label class="blocks-htw" title="Number of head-tail molecules in head_tail_water (each molecule = 1 head + 1 tail = 2 blocks). Total block count = 2·molecules + waters.">molecules <input id="nMolecules" type="number" min="0" max="5000" step="1" value="800"></label>
-  <label class="blocks-htw" title="Number of bondless water blocks in head_tail_water. Waters are orientation-blind and only feel the htw_w*_* pair forces.">waters <input id="nWaters" type="number" min="0" max="10000" step="1" value="500"></label>
-  <label title="Radius of the spherical container. Blocks are pushed inward from the wall.">sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
+  <label class="blocks-htw" title="Number of bondless water blocks in head_tail_water. Waters are orientation-blind and only feel the htw_w*_* pair forces.">waters <input id="nWaters" type="number" min="0" max="10000" step="1" value="1000"></label>
+  <label title="Container shape.&#10;&#10;sphere: inward radial wall force (wallK) keeps blocks inside a ball of radius sphere R.&#10;cube (wrapping): periodic boundary conditions on a cube of edge cubeSize. Anything leaving one face reappears on the opposite face; pair forces use the minimum-image displacement so blocks interact across faces too. No wallK is applied. Pick cubeSize as an integer multiple of cutoff (default 18 / 3 = 6 cells per axis).">container <select id="container">
+    <option value="cube">cube (wrapping)</option>
+    <option value="sphere">sphere</option>
+  </select></label>
+  <label class="container-sphere" title="Radius of the spherical container. Blocks are pushed inward from the wall.">sphere R <input id="sphereR" type="number" min="2" max="40" step="0.5" value="9"></label>
+  <label class="container-cube" title="Edge length of the periodic cube. Pick this as an integer multiple of cutoff (default 18 / 3 = 6 cells/axis); it must be at least 3·cutoff for the spatial-hash neighbor search to remain correct under wrap.">cube size <input id="cubeSize" type="number" min="3" max="200" step="0.5" value="18"></label>
   <label title="Pair-interaction cutoff distance. Pairs farther apart than this contribute zero force/torque (with a smooth taper between cutoff/2 and cutoff). Bonded H-T pairs ignore this — bonds always pull.">cutoff <input id="cutoff" type="number" min="0.1" step="0.1" value="3.0"></label>
   <hr>
   <div class="cfg-sheet">
-    <label title="Equilibrium spacing for in-plane neighbors — the well's center along the displacement axis.">d_peak <input id="d_peak" type="number" step="0.05" value="0.4"></label>
+    <label title="Equilibrium spacing for in-plane neighbors — the well's center along the displacement axis.">d_peak <input id="d_peak" type="number" step="0.05" value="0.5"></label>
     <label title="−1/d coefficient for in-plane displacements. Should be NEGATIVE for an actual repulsive core.">in-plane rep <input id="in_plane_repulsion" type="number" step="0.1" value="-0.6"></label>
-    <label title="−1/d coefficient for stacked displacements. Should be NEGATIVE for an actual repulsive core.">ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-1.2"></label>
-    <label title="Attraction term coefficient. NEGATIVE for an attractive well at d_peak (so flat sheets form).">attraction <input id="attraction" type="number" step="0.1" value="-1.2"></label>
-    <label title="Intrinsic plane-bend angle in radians. Each block's plane tilts by this much, so flat sheets curl into bowls/shells with curvature ≈ bend.">bend (rad) <input id="bend" type="number" step="0.01" value="0.7"></label>
+    <label title="−1/d coefficient for stacked displacements. Should be NEGATIVE for an actual repulsive core.">ortho rep <input id="orthogonal_repulsion" type="number" step="0.1" value="-0.1"></label>
+    <label title="Attraction term coefficient. NEGATIVE for an attractive well at d_peak (so flat sheets form).">attraction <input id="attraction" type="number" step="0.1" value="0"></label>
+    <label title="Intrinsic plane-bend angle in radians. Each block's plane tilts by this much, so flat sheets curl into bowls/shells with curvature ≈ bend.">bend (rad) <input id="bend" type="number" step="0.01" value="0"></label>
     <hr>
   </div>
   <div class="cfg-bonded">
@@ -105,14 +119,19 @@
     <hr>
   </div>
   <label title="Time-step multiplier. The base step is 0.04; this scales it. Higher = faster simulation but less stable.">dt × <input id="dtMul" type="range" min="0.05" max="3" step="0.05" value="1"></label>
-  <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.958"></label>
-  <label title="Strength of the inward push from the sphere wall. Higher = blocks held closer to the center.">wall k <input id="wallK" type="number" step="0.1" value="0.1"></label>
+  <label title="Velocity damping per step. Closer to 1 = less dissipation (closer to free dynamics). Closer to 0.5 = heavily overdamped.">damping <input id="damping" type="range" min="0.5" max="0.999" step="0.001" value="0.973"></label>
+  <label class="container-sphere" title="Strength of the inward push from the sphere wall. Higher = blocks held closer to the center. Not used by the cube container, which is periodic.">wall k <input id="wallK" type="number" step="0.1" value="0.1"></label>
   <label title="Hard upper bound on per-block force/torque magnitudes (each step). Stops singularities (pairs at ~zero distance) from blowing up the integrator.">force cap <input id="fCap" type="number" step="1" value="50"></label>
   <div class="row">
     <button id="resetBtn">reset</button>
     <button id="pauseBtn">pause</button>
     <button id="kickBtn">jiggle</button>
   </div>
+</div>
+
+<div id="histPanel">
+  <h2>direction histogram</h2>
+  <canvas id="histCanvas"></canvas>
 </div>
 
 <div id="stats"></div>
@@ -137,8 +156,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   DEFAULTS, makeBlock, stepBlocks, refreshNormal,
   setupHeadTail, setupHeadBodyTail, setupHeadTailWater,
-  randomQuat, randomPointInBall,
-} from './physics.mjs?v=13';
+  randomQuat, randomPointInBall, randomPointInBox,
+} from './physics.mjs?v=15';
 
 // ---------------------------------------------------------------------------
 // Parameters: live state, mirrors the controls in #ui. Physics module reads
@@ -147,9 +166,9 @@ import {
 // ---------------------------------------------------------------------------
 const params = {
   ...DEFAULTS,
-  nBlocks: 1000,
+  nBlocks: 2000,
   nMolecules: 800,
-  nWaters: 500,
+  nWaters: 1000,
   dtMul: 1,
 };
 
@@ -157,6 +176,31 @@ let blocks = [];
 let scene, camera, renderer, controls, sphereMesh;
 let hexGeo, hexMat, headGeo, tailGeo, waterGeo, waterMat;
 let paused = false;
+
+// ── Direction histogram state ───────────────────────────────────────────────
+// A small icosahedron under the UI: each face = one bin, colored AND radially
+// extruded by how many blocks have their normal closest to that face's
+// centroid direction. Subdivision 3 → 1280 faces (vs 320 at subdiv 2). The
+// mesh is non-indexed (one triplet of vertices per face), which is what the
+// PolyhedronGeometry base class produces — so per-face coloring is just
+// "write the same RGB to vertices [3f, 3f+1, 3f+2]" and per-face radial lift
+// is "scale the same 3 vertices uniformly". Because vertices are duplicated
+// per face, neighboring bins lifted to different heights leave visible
+// vertical edges between them — that's the bar-chart-on-a-sphere look.
+let histRenderer, histScene, histCamera, histGeom, histColors;
+let histFaceNormals;          // Float32Array length 3·faceCount of unit centroid dirs
+let histCounts;               // Uint32Array length faceCount, reused each frame
+let histOrigPos;              // Float32Array snapshot of the unit-sphere positions
+let histFaceHeights;          // Float32Array length faceCount: each bin's lift radius
+// Wall mesh: bridges every shared icosahedron edge between two adjacent bins
+// of (possibly) different heights. Without this, each lifted plateau floats
+// in midair; with it, the histogram becomes a connected stepped surface.
+let histUnitDirs;             // Float32Array 3·V of unique unit vertex dirs
+let histWallEdges;            // Uint32Array 4·E: [vA, vB, faceLo, faceHi] per edge
+let histWallGeom, histWallPos, histWallCol;
+const HIST_SUBDIV = 3;
+const HIST_RADIUS_BOOST = 0.6;   // max-density bin extrudes to radius 1 + boost
+const _histColor = new THREE.Color();
 
 // Map a block's normal vector to RGB using |n| = (|x|, |y|, |z|). The hex
 // sheet is front/back symmetric (n and -n are the same pose), so taking the
@@ -219,26 +263,288 @@ function buildScene() {
   rebuildBlocks();
 }
 
+// Build the small mini-renderer + scene for the direction histogram. Called
+// once at startup. Lights are deliberately gentle (mostly ambient) so the
+// per-face vertex colors carry the visual signal rather than shading.
+function buildHistogram() {
+  const canvas = document.getElementById('histCanvas');
+  const w = canvas.clientWidth || 220, h = canvas.clientHeight || 220;
+  histRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  histRenderer.setPixelRatio(devicePixelRatio);
+  histRenderer.setSize(w, h, false);
+
+  histScene = new THREE.Scene();
+  // FOV/distance picked so the fully-extruded sphere (radius 1+HIST_RADIUS_BOOST)
+  // fits with margin. syncHistCamera mirrors the same distance.
+  histCamera = new THREE.PerspectiveCamera(45, w / h, 0.1, 20);
+  histCamera.position.set(0, 0, 4.5);
+  histCamera.lookAt(0, 0, 0);
+
+  histScene.add(new THREE.AmbientLight(0xffffff, 0.85));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.35);
+  dl.position.set(2, 3, 4); histScene.add(dl);
+
+  histGeom = new THREE.IcosahedronGeometry(1, HIST_SUBDIV);
+  // PolyhedronGeometry produces a non-indexed BufferGeometry: positions are
+  // 3 vertices per face in source order. Precompute each face's centroid
+  // direction so we can bin block normals by argmax dot-product.
+  const posAttr = histGeom.attributes.position;
+  const faceCount = posAttr.count / 3;
+  histFaceNormals = new Float32Array(faceCount * 3);
+  const pa = posAttr.array;
+  for (let f = 0; f < faceCount; f++) {
+    const i = f * 9;
+    let cx = (pa[i  ] + pa[i+3] + pa[i+6]) / 3;
+    let cy = (pa[i+1] + pa[i+4] + pa[i+7]) / 3;
+    let cz = (pa[i+2] + pa[i+5] + pa[i+8]) / 3;
+    const inv = 1 / Math.hypot(cx, cy, cz);
+    histFaceNormals[f*3]     = cx * inv;
+    histFaceNormals[f*3 + 1] = cy * inv;
+    histFaceNormals[f*3 + 2] = cz * inv;
+  }
+  histColors = new Float32Array(posAttr.count * 3);
+  histGeom.setAttribute('color', new THREE.BufferAttribute(histColors, 3));
+  histCounts = new Uint32Array(faceCount);
+  histFaceHeights = new Float32Array(faceCount);
+  // Snapshot the unit-sphere positions so we can re-derive each face's lifted
+  // vertex positions from scratch every frame: lifted = unit · (1 + boost·t).
+  histOrigPos = posAttr.array.slice();
+
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.65, metalness: 0.0, flatShading: true,
+  });
+  const sphereMesh = new THREE.Mesh(histGeom, mat);
+  sphereMesh.frustumCulled = false;     // bounding sphere = unit; lifts go past it
+  histScene.add(sphereMesh);
+  // Subtle wire overlay so adjacent bins stay distinguishable when they have
+  // similar colors (otherwise low-density regions look like one blob). Shares
+  // the geometry, so the wires lift with their faces — gives each extruded
+  // patch a clean dark outline on top of every bin.
+  const wireMesh = new THREE.Mesh(histGeom, new THREE.MeshBasicMaterial({
+    color: 0x000000, wireframe: true, transparent: true, opacity: 0.18,
+  }));
+  wireMesh.frustumCulled = false;
+  histScene.add(wireMesh);
+
+  // ── Walls ────────────────────────────────────────────────────────────────
+  // Build vertex deduplication + edge adjacency once. PolyhedronGeometry
+  // produces non-indexed buffers (each face has its own copy of every
+  // vertex); for walls we need to know which two faces share each unique
+  // edge so we can bridge their (potentially different) heights.
+  const dedup = _dedupHistVertices(posAttr.array);
+  histUnitDirs = dedup.uniqueDirs;
+  histWallEdges = _buildHistEdges(dedup.faceVerts, faceCount);
+  const edgeCount = histWallEdges.length / 4;
+  // 6 verts per edge (two triangles forming a quad), 3 floats per vert.
+  histWallPos = new Float32Array(edgeCount * 18);
+  histWallCol = new Float32Array(edgeCount * 18);
+  histWallGeom = new THREE.BufferGeometry();
+  histWallGeom.setAttribute('position', new THREE.BufferAttribute(histWallPos, 3));
+  histWallGeom.setAttribute('color', new THREE.BufferAttribute(histWallCol, 3));
+  // DoubleSide so walls are visible no matter which way the camera approaches
+  // (winding here is consistent but not always outward-facing on a sphere).
+  const wallMat = new THREE.MeshStandardMaterial({
+    vertexColors: true, side: THREE.DoubleSide,
+    roughness: 0.7, metalness: 0.0, flatShading: true,
+  });
+  const wallMesh = new THREE.Mesh(histWallGeom, wallMat);
+  wallMesh.frustumCulled = false;
+  histScene.add(wallMesh);
+}
+
+// Dedup vertices of a non-indexed BufferGeometry by exact-coordinate hash
+// (rounded to 5 decimals to swallow subdivision float wobble). Returns
+// { uniqueDirs: Float32Array 3·V, faceVerts: Uint16Array length = posCount/3 }
+// where each entry of faceVerts is the unique-vertex index for the
+// corresponding entry of the original positions array.
+function _dedupHistVertices(positions) {
+  const map = new Map();
+  const dirs = [];
+  const faceVerts = new Uint16Array(positions.length / 3);
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i], y = positions[i+1], z = positions[i+2];
+    const key = x.toFixed(5) + ',' + y.toFixed(5) + ',' + z.toFixed(5);
+    let idx = map.get(key);
+    if (idx === undefined) {
+      idx = dirs.length / 3;
+      dirs.push(x, y, z);
+      map.set(key, idx);
+    }
+    faceVerts[i / 3] = idx;
+  }
+  return { uniqueDirs: new Float32Array(dirs), faceVerts };
+}
+
+// For each undirected edge (vA, vB) shared by two faces in a closed mesh,
+// emit a 4-tuple [vA, vB, f1, f2]. Closed icosahedron → every edge has
+// exactly two adjacent faces. Edge key packs {lo, hi} as lo·100000 + hi
+// (V ≤ 642 at subdiv=3, so 100000 is plenty of headroom).
+function _buildHistEdges(faceVerts, faceCount) {
+  const edgeMap = new Map();
+  for (let f = 0; f < faceCount; f++) {
+    const v0 = faceVerts[3*f], v1 = faceVerts[3*f+1], v2 = faceVerts[3*f+2];
+    const pairs = [[v0, v1], [v1, v2], [v2, v0]];
+    for (const [a, b] of pairs) {
+      const lo = a < b ? a : b, hi = a < b ? b : a;
+      const key = lo * 100000 + hi;
+      const existing = edgeMap.get(key);
+      if (existing === undefined) edgeMap.set(key, [f, -1]);
+      else existing[1] = f;
+    }
+  }
+  const out = [];
+  for (const [key, [f1, f2]] of edgeMap) {
+    if (f2 === -1) continue;          // boundary edge (shouldn't happen for icosa)
+    const lo = (key / 100000) | 0, hi = key % 100000;
+    out.push(lo, hi, f1, f2);
+  }
+  return new Uint32Array(out);
+}
+
+// Bin every block's normal into the closest face by max dot-product, then
+// rewrite the vertex-color buffer with a hue ramp keyed to count/maxCount.
+// Water blocks (orientation-blind, never receive torque) are skipped: their
+// quaternion stays at its random initial value, which would just smear a
+// uniform background over the structured head/tail signal.
+function updateHistogram() {
+  const faceCount = histCounts.length;
+  for (let f = 0; f < faceCount; f++) histCounts[f] = 0;
+
+  const skipWater = params.config === 'head_tail_water';
+  for (let bi = 0; bi < blocks.length; bi++) {
+    const b = blocks[bi];
+    if (skipWater && b.type === 2) continue;
+    const nx = b.normal[0], ny = b.normal[1], nz = b.normal[2];
+    let bestF = 0, bestDot = -2;
+    for (let f = 0; f < faceCount; f++) {
+      const fi = f * 3;
+      const dot = nx * histFaceNormals[fi]
+                + ny * histFaceNormals[fi + 1]
+                + nz * histFaceNormals[fi + 2];
+      if (dot > bestDot) { bestDot = dot; bestF = f; }
+    }
+    histCounts[bestF]++;
+  }
+
+  // Normalize. maxCount=1 fallback keeps an empty histogram from dividing by
+  // zero and turning every face into NaN.
+  let maxCount = 1;
+  for (let f = 0; f < faceCount; f++) {
+    if (histCounts[f] > maxCount) maxCount = histCounts[f];
+  }
+  const inv = 1 / maxCount;
+  const posArr = histGeom.attributes.position.array;
+  for (let f = 0; f < faceCount; f++) {
+    const t = histCounts[f] * inv;
+    // Hue blue (0.66) → red (0.0) as density rises; lightness ramps up too
+    // so empty bins read as dark and dense bins as bright.
+    _histColor.setHSL(0.66 * (1 - t), 0.85, 0.18 + 0.42 * t);
+    const r = _histColor.r, g = _histColor.g, bl = _histColor.b;
+    const ci = f * 9;
+    histColors[ci    ] = r; histColors[ci + 1] = g; histColors[ci + 2] = bl;
+    histColors[ci + 3] = r; histColors[ci + 4] = g; histColors[ci + 5] = bl;
+    histColors[ci + 6] = r; histColors[ci + 7] = g; histColors[ci + 8] = bl;
+    // Radial extrusion: scale the 3 unit-sphere vertices uniformly outward
+    // by (1 + boost·t). Same scale on all 3 keeps the face a flat patch (its
+    // normal direction is unchanged), just translated outward.
+    const h = 1 + HIST_RADIUS_BOOST * t;
+    histFaceHeights[f] = h;
+    posArr[ci    ] = histOrigPos[ci    ] * h;
+    posArr[ci + 1] = histOrigPos[ci + 1] * h;
+    posArr[ci + 2] = histOrigPos[ci + 2] * h;
+    posArr[ci + 3] = histOrigPos[ci + 3] * h;
+    posArr[ci + 4] = histOrigPos[ci + 4] * h;
+    posArr[ci + 5] = histOrigPos[ci + 5] * h;
+    posArr[ci + 6] = histOrigPos[ci + 6] * h;
+    posArr[ci + 7] = histOrigPos[ci + 7] * h;
+    posArr[ci + 8] = histOrigPos[ci + 8] * h;
+  }
+  histGeom.attributes.color.needsUpdate = true;
+  histGeom.attributes.position.needsUpdate = true;
+
+  // Walls: bridge the height step between every pair of adjacent bins. For
+  // each shared edge (vA, vB), build a quad spanning between the lower
+  // bin's height and the higher bin's height, colored to match the higher
+  // bin (so a tall red bin appears as a connected solid red column down to
+  // its shorter neighbour, the standard 3D-bar-chart look).
+  const edgeCount = histWallEdges.length / 4;
+  for (let e = 0; e < edgeCount; e++) {
+    const ei = e * 4;
+    const va = histWallEdges[ei], vb = histWallEdges[ei + 1];
+    const f1 = histWallEdges[ei + 2], f2 = histWallEdges[ei + 3];
+    const h1 = histFaceHeights[f1], h2 = histFaceHeights[f2];
+    const hiF = h1 >= h2 ? f1 : f2;
+    const loH = h1 < h2 ? h1 : h2;
+    const hiH = h1 > h2 ? h1 : h2;
+    const ax = histUnitDirs[3*va],     ay = histUnitDirs[3*va + 1], az = histUnitDirs[3*va + 2];
+    const bx = histUnitDirs[3*vb],     by = histUnitDirs[3*vb + 1], bz = histUnitDirs[3*vb + 2];
+    const wi = e * 18;
+    // Triangle 1: a_lo, b_lo, a_hi
+    histWallPos[wi     ] = ax * loH; histWallPos[wi +  1] = ay * loH; histWallPos[wi +  2] = az * loH;
+    histWallPos[wi +  3] = bx * loH; histWallPos[wi +  4] = by * loH; histWallPos[wi +  5] = bz * loH;
+    histWallPos[wi +  6] = ax * hiH; histWallPos[wi +  7] = ay * hiH; histWallPos[wi +  8] = az * hiH;
+    // Triangle 2: b_lo, b_hi, a_hi
+    histWallPos[wi +  9] = bx * loH; histWallPos[wi + 10] = by * loH; histWallPos[wi + 11] = bz * loH;
+    histWallPos[wi + 12] = bx * hiH; histWallPos[wi + 13] = by * hiH; histWallPos[wi + 14] = bz * hiH;
+    histWallPos[wi + 15] = ax * hiH; histWallPos[wi + 16] = ay * hiH; histWallPos[wi + 17] = az * hiH;
+    // Color: read the higher face's color from the plateau-color buffer.
+    const fci = hiF * 9;
+    const r = histColors[fci], g = histColors[fci + 1], bl = histColors[fci + 2];
+    for (let v = 0; v < 6; v++) {
+      const wci = wi + v * 3;
+      histWallCol[wci] = r; histWallCol[wci + 1] = g; histWallCol[wci + 2] = bl;
+    }
+  }
+  histWallGeom.attributes.position.needsUpdate = true;
+  histWallGeom.attributes.color.needsUpdate = true;
+}
+
+// Keep the histogram view aligned with the main camera so a face on the
+// histogram visually corresponds to the same direction as in the main scene.
+function syncHistCamera() {
+  const len = Math.hypot(camera.position.x, camera.position.y, camera.position.z);
+  if (len < 1e-6) return;
+  const s = 4.5 / len;
+  histCamera.position.set(camera.position.x * s, camera.position.y * s, camera.position.z * s);
+  histCamera.up.copy(camera.up);
+  histCamera.lookAt(0, 0, 0);
+}
+
 function rebuildContainer() {
   if (sphereMesh) scene.remove(sphereMesh);
-  const g = new THREE.SphereGeometry(params.sphereR, 32, 16);
-  const m = new THREE.MeshBasicMaterial({ color: 0x2a3a4f, wireframe: true,
-    transparent: true, opacity: 0.4 });
-  sphereMesh = new THREE.Mesh(g, m);
+  if (params.container === 'cube') {
+    // Periodic cube: draw the 12 edges only (not a triangulated wireframe)
+    // so the boundary stays visually clean.
+    const L = params.cubeSize;
+    const eg = new THREE.EdgesGeometry(new THREE.BoxGeometry(L, L, L));
+    const m = new THREE.LineBasicMaterial({ color: 0x2a3a4f,
+      transparent: true, opacity: 0.6 });
+    sphereMesh = new THREE.LineSegments(eg, m);
+  } else {
+    const g = new THREE.SphereGeometry(params.sphereR, 32, 16);
+    const m = new THREE.MeshBasicMaterial({ color: 0x2a3a4f, wireframe: true,
+      transparent: true, opacity: 0.4 });
+    sphereMesh = new THREE.Mesh(g, m);
+  }
   scene.add(sphereMesh);
 }
 
 function rebuildBlocks() {
   for (const b of blocks) scene.remove(b.mesh);
   blocks = [];
-  const R = params.sphereR * 0.9;
   // head_tail_water uses two sliders (nMolecules + nWaters); other configs
   // use the single nBlocks count.
   const total = params.config === 'head_tail_water'
     ? 2 * params.nMolecules + params.nWaters
     : params.nBlocks;
+  // Sphere container: seed inside a ball of 0.9·R so blocks start clear of
+  // the wall. Cube container: seed uniformly in the periodic box; no inset
+  // needed since there's no wall to push off.
+  const seed = params.container === 'cube'
+    ? () => randomPointInBox(params.cubeSize)
+    : () => randomPointInBall(params.sphereR * 0.9);
   for (let i = 0; i < total; i++) {
-    blocks.push(makeBlock(randomPointInBall(R), randomQuat()));
+    blocks.push(makeBlock(seed(), randomQuat()));
   }
   if (params.config === 'head_tail')       setupHeadTail(blocks, params);
   if (params.config === 'head_body_tail')  setupHeadBodyTail(blocks, params);
@@ -302,6 +608,10 @@ function applyConfigVisibility() {
     el.style.display = c === 'head_tail_water' ? 'none' : '';
   for (const el of document.querySelectorAll('.blocks-htw'))
     el.style.display = c === 'head_tail_water' ? '' : 'none';
+  for (const el of document.querySelectorAll('.container-sphere'))
+    el.style.display = params.container === 'sphere' ? '' : 'none';
+  for (const el of document.querySelectorAll('.container-cube'))
+    el.style.display = params.container === 'cube' ? '' : 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +638,9 @@ function animate() {
   syncMeshes();
   controls.update();
   renderer.render(scene, camera);
+  updateHistogram();
+  syncHistCamera();
+  histRenderer.render(histScene, histCamera);
 
   frame++;
   const now = performance.now();
@@ -358,6 +671,7 @@ addEventListener('resize', () => {
 // ---------------------------------------------------------------------------
 const URL_KEYS = [
   'config',
+  'container', 'cubeSize',
   'nBlocks', 'nMolecules', 'nWaters', 'sphereR', 'cutoff',
   // sheet
   'd_peak', 'in_plane_repulsion', 'orthogonal_repulsion', 'attraction', 'bend',
@@ -388,7 +702,7 @@ function applyURLToParams() {
   for (const k of URL_KEYS) {
     if (!sp.has(k)) continue;
     const raw = sp.get(k);
-    if (k === 'config') { params[k] = raw; continue; }
+    if (k === 'config' || k === 'container') { params[k] = raw; continue; }
     const v = parseFloat(raw);
     if (Number.isFinite(v)) params[k] = v;
   }
@@ -424,6 +738,7 @@ function bindRange(id, key) {
 
 applyURLToParams();
 buildScene();
+buildHistogram();
 
 // ── config dropdown ─────────────────────────────────────────────────────────
 const configEl = document.getElementById('config');
@@ -434,10 +749,22 @@ configEl.addEventListener('change', () => {
   writeParamsToURL();
 });
 
+// ── container dropdown ──────────────────────────────────────────────────────
+const containerEl = document.getElementById('container');
+containerEl.value = params.container;
+containerEl.addEventListener('change', () => {
+  params.container = containerEl.value;
+  rebuildContainer();       // sphere mesh ↔ cube edge mesh
+  rebuildBlocks();           // re-seed using the matching geometry
+  applyConfigVisibility();   // toggle sphereR/wallK vs cubeSize
+  writeParamsToURL();
+});
+
 bindNumber('nBlocks', 'nBlocks', rebuildBlocks);
 bindNumber('nMolecules', 'nMolecules', rebuildBlocks);
 bindNumber('nWaters', 'nWaters', rebuildBlocks);
 bindNumber('sphereR', 'sphereR', () => { rebuildContainer(); rebuildBlocks(); });
+bindNumber('cubeSize', 'cubeSize', () => { rebuildContainer(); rebuildBlocks(); });
 bindNumber('cutoff', 'cutoff');
 
 // sheet
