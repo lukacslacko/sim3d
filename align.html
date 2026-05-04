@@ -8,7 +8,7 @@
     font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
   #ui { position: fixed; top: 10px; left: 10px; padding: 10px 12px;
     background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 6px;
-    backdrop-filter: blur(6px); min-width: 240px; max-height: calc(100vh - 310px);
+    backdrop-filter: blur(6px); min-width: 240px; max-height: calc(100vh - 510px);
     overflow-y: auto; }
   #ui h1 { font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; color: #9ad8ff; }
   #ui label { display: flex; justify-content: space-between; gap: 8px;
@@ -28,6 +28,13 @@
   #histPanel h2 { font-size: 11px; margin: 0 0 6px; color: #9ad8ff;
     letter-spacing: .04em; font-weight: normal; }
   #histCanvas { display: block; width: 220px; height: 220px; background: transparent; }
+  #histPanel h3 { font-size: 11px; margin: 8px 0 4px; color: #9ad8ff;
+    letter-spacing: .04em; font-weight: normal; }
+  #misHistCanvas { display: block; width: 220px; height: 60px; background: #0a0d12;
+    border: 1px solid #1a232f; }
+  #quatPlotCanvas { display: block; width: 220px; height: 80px; background: #0a0d12;
+    border: 1px solid #1a232f; }
+  #quatStatus { font-size: 10px; color: #7a8696; margin-top: 4px; line-height: 1.3; }
   #stats { position: fixed; bottom: 10px; left: 10px; padding: 6px 9px;
     background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 4px;
     font-variant-numeric: tabular-nums; }
@@ -72,15 +79,17 @@
   <label title="Per-step alignment fraction. Each frame applies a rotation that's η·(1/6)·Σ rot_to_neighbors — i.e. rotates ~η of the way toward the average neighbor orientation. 0.05 = slow relaxation; 0.5 = aggressive snap.">step rate η <input id="eta" type="range" min="0.01" max="1.0" step="0.01" value="0.2"></label>
   <label title="Per-step random-rotation magnitude (radians). Each axis of the rotation update gets uniform noise in [-noise, noise]. Acts like temperature: noise > 0 keeps the system fluctuating instead of freezing on a metastable defect.">noise <input id="noise" type="range" min="0" max="0.5" step="0.005" value="0"></label>
   <hr>
-  <label title="Render mode.&#10;&#10;heat: voxel colored AND faded by misalignment to neighbors. Aligned cells are transparent, defects show as bright opaque clusters. Highlights DEFECTS.&#10;domains: voxel colored by its frame's +Z direction (HSL hue from azimuth, lightness from elevation), and faded by 1−misalignment so aligned regions show as solid same-color blobs and domain walls / defects fade out. Highlights ALIGNED DOMAINS.&#10;axes: each grid point shows its frame as 3 line segments — red = +X, green = +Y, blue = +Z.">render <select id="renderMode">
+  <label title="Render mode.&#10;&#10;heat: voxel colored AND faded by misalignment to neighbors. Aligned cells are transparent, defects show as bright opaque clusters. Highlights DEFECTS.&#10;domains: voxel colored by its frame's +Z direction (HSL hue from azimuth, lightness from elevation), and faded by 1−misalignment so aligned regions show as solid same-color blobs and domain walls / defects fade out. Highlights ALIGNED DOMAINS.&#10;components: cells with misalignment ≥ threshold are kept, all others are invisible. Above-threshold cells are colored by 6-connected component (PBC-aware). Use this to count and isolate Z₂ disclination lines.&#10;axes: each grid point shows its frame as 3 line segments — red = +X, green = +Y, blue = +Z.">render <select id="renderMode">
     <option value="heat">misalignment (heat)</option>
     <option value="domains">domains (direction)</option>
+    <option value="components">components (thresholded)</option>
     <option value="axes">axes (RGB sticks)</option>
   </select></label>
   <label class="mode-axes" title="Length of each axis stick (visual only). The frame is drawn as 3 line segments from the grid point outward — red = +X, green = +Y, blue = +Z. Set near the grid spacing to avoid overlap, smaller to declutter.">axis length <input id="axisLen" type="range" min="0.05" max="2.0" step="0.05" value="0.5"></label>
   <label class="mode-voxel" title="Voxel size as a fraction of the grid spacing. 1.0 = voxels touch their neighbors (no gaps); smaller = isolated cubes with visible spacing.">voxel size <input id="voxelScale" type="range" min="0.1" max="1.0" step="0.05" value="1.0"></label>
   <label class="mode-voxel" title="Misalignment value that maps to 'fully saturated' on the alpha curve. In heat mode this is the value that becomes fully bright red and fully opaque; in domains mode it's the value at which a cell becomes fully transparent.">color cap <input id="misalignCap" type="range" min="0.05" max="1.0" step="0.05" value="0.5"></label>
   <label class="mode-voxel" title="Transparency curve exponent.&#10;heat mode:    alpha = t^γ          (t = misalignment / cap; γ>1 = only severe defects show)&#10;domains mode: alpha = (1−t)^γ      (γ>1 = only nearly-perfect aligned regions show)">α gamma <input id="alphaGamma" type="range" min="0.2" max="5.0" step="0.1" value="1.0"></label>
+  <label class="mode-components" title="Misalignment threshold for components mode. Cells with misalignment ≥ this value are kept and grouped into 6-connected components (PBC-aware); cells below it are invisible. Watch the misalignment histogram (bottom-left) — typically you want the threshold in the empty gap between the bulk peak (low misalign, aligned cells) and the defect-line peak (high misalign).">threshold <input id="misThreshold" type="range" min="0" max="1" step="0.005" value="0.3"></label>
   <hr>
   <label title="Trace streamlines starting from a regular grid on the cube's −Z face, stepping along each cell's local +Z direction, until they exit any cube face. Always rendered on top of the voxel mesh so they overlay any render mode (heat, domains, axes).">paths <input type="checkbox" id="showPaths"></label>
   <label class="paths-on" title="Number of streamline seeds along each axis on the seeding face. Total streamlines = seeds².">seeds/side <input id="pathSeeds" type="range" min="2" max="20" step="1" value="10"></label>
@@ -102,6 +111,11 @@
 <div id="histPanel">
   <h2>+Z direction histogram</h2>
   <canvas id="histCanvas"></canvas>
+  <h3>misalignment histogram (log y)</h3>
+  <canvas id="misHistCanvas"></canvas>
+  <h3>quaternion around loop</h3>
+  <canvas id="quatPlotCanvas"></canvas>
+  <div id="quatStatus">components mode: click two voxels to inspect a loop around the segment between them</div>
 </div>
 
 <div id="obsPanel">
@@ -154,6 +168,8 @@ const params = {
   voxelScale: 1.0,
   misalignCap: 0.5,
   alphaGamma: 1.0,
+  misThreshold: 0.3,
+
   stepsPerFrame: 1,
   // Render-only origin shift in grid-cell units. PBC wraps — pure visual
   // rotation of which cell sits where; the simulation state is unchanged.
@@ -176,6 +192,29 @@ const params = {
 let scene, camera, renderer, controls, cubeMesh;
 let lines, lineGeom, linePos, lineCol;
 let voxelMesh, voxelMisalignBuf, voxelAlphaBuf;
+// Connected-components state for components render mode + misalignment 1-D
+// histogram (bottom-left panel below the +Z direction histogram).
+let componentId = null;          // Int32Array length N³, -1 for below-threshold
+let numComponents = 0;
+let _ccStack = null;             // BFS scratch
+let misHistCanvas, misHistCtx;
+const MIS_HIST_BINS = 50;
+const _misHistBins = new Uint32Array(MIS_HIST_BINS);
+// Voxel-pair selection (components mode): click 2 above-threshold voxels to
+// generate a small circle perpendicular to the segment between them, sample
+// the quaternion field around it, and plot the loop in the bottom-left panel.
+const _selCells = [];                 // cell indices, length 0/1/2
+let _selMarkerMesh = null;            // 2 highlight spheres on the picked voxels
+let _circleLineMesh = null;           // LineLoop drawing the circle in 3D
+let _circleFramesMesh = null;         // LineSegments: small RGB frames at each sample
+let _quatPlotCanvas, _quatPlotCtx, _quatStatusEl;
+let _quatPlotData = null;             // {quats, dotEnd, axisRgb, ...} or null
+const SEL_NUM_SAMPLES = 64;
+const _raycaster = new THREE.Raycaster();
+const _ndcMouse = new THREE.Vector2();
+const _selScratchMat = new THREE.Matrix4();
+const _selScratchColor = new THREE.Color();
+let _mouseDownPos = null;             // for drag-vs-click in pointer events
 let state, axesBuf, dirsBuf, hist;
 let gpuAligner = null;
 // Streamline overlay: a single LineSegments mesh, allocated oversized once
@@ -269,6 +308,67 @@ function buildScene() {
   obsMarkerLine.frustumCulled = false;
   obsMarkerLine.renderOrder = 1000;
   scene.add(obsMarkerLine);
+
+  // ── Voxel-pair selection (components mode) ───────────────────────────────
+  // Two highlight spheres at the picked voxels, a circle through the
+  // midpoint perpendicular to the segment between them, and a small RGB
+  // frame at each sample point so you can see the orientation field
+  // winding around the loop. All hidden until two voxels are selected.
+  const selMarkerGeo = new THREE.SphereGeometry(0.45, 18, 12);
+  const selMarkerMat = new THREE.MeshBasicMaterial({
+    color: 0x66ffff, transparent: true, opacity: 0.55,
+    depthTest: false, depthWrite: false,
+  });
+  _selMarkerMesh = new THREE.InstancedMesh(selMarkerGeo, selMarkerMat, 2);
+  _selMarkerMesh.frustumCulled = false;
+  _selMarkerMesh.renderOrder = 1010;
+  _selMarkerMesh.visible = false;
+  // Hide instances by scaling them to zero initially (matrices are identity).
+  for (let i = 0; i < 2; i++) {
+    _selScratchMat.makeScale(0, 0, 0);
+    _selMarkerMesh.setMatrixAt(i, _selScratchMat);
+  }
+  scene.add(_selMarkerMesh);
+
+  const circlePos = new Float32Array(SEL_NUM_SAMPLES * 3);
+  const circleGeom = new THREE.BufferGeometry();
+  circleGeom.setAttribute('position', new THREE.BufferAttribute(circlePos, 3));
+  _circleLineMesh = new THREE.LineLoop(circleGeom, new THREE.LineBasicMaterial({
+    color: 0xffff66, transparent: true, opacity: 0.95,
+    depthTest: false, depthWrite: false,
+  }));
+  _circleLineMesh.frustumCulled = false;
+  _circleLineMesh.renderOrder = 1011;
+  _circleLineMesh.visible = false;
+  scene.add(_circleLineMesh);
+
+  // Frames: 3 axes per sample × 2 verts/axis = 6 verts/sample. Per-vertex
+  // colors are written once (RGB by axis) and don't change.
+  const framePos = new Float32Array(SEL_NUM_SAMPLES * 18);
+  const frameCol = new Float32Array(SEL_NUM_SAMPLES * 18);
+  for (let s = 0; s < SEL_NUM_SAMPLES; s++) {
+    const ci = s * 18;
+    // X axis: red
+    frameCol[ci     ] = 1.0; frameCol[ci +  1] = 0.20; frameCol[ci +  2] = 0.20;
+    frameCol[ci +  3] = 1.0; frameCol[ci +  4] = 0.20; frameCol[ci +  5] = 0.20;
+    // Y axis: green
+    frameCol[ci +  6] = 0.20; frameCol[ci +  7] = 1.0; frameCol[ci +  8] = 0.20;
+    frameCol[ci +  9] = 0.20; frameCol[ci + 10] = 1.0; frameCol[ci + 11] = 0.20;
+    // Z axis: blue
+    frameCol[ci + 12] = 0.40; frameCol[ci + 13] = 0.50; frameCol[ci + 14] = 1.0;
+    frameCol[ci + 15] = 0.40; frameCol[ci + 16] = 0.50; frameCol[ci + 17] = 1.0;
+  }
+  const framesGeom = new THREE.BufferGeometry();
+  framesGeom.setAttribute('position', new THREE.BufferAttribute(framePos, 3));
+  framesGeom.setAttribute('color',    new THREE.BufferAttribute(frameCol, 3));
+  _circleFramesMesh = new THREE.LineSegments(framesGeom, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true,
+    depthTest: false, depthWrite: false,
+  }));
+  _circleFramesMesh.frustumCulled = false;
+  _circleFramesMesh.renderOrder = 1012;
+  _circleFramesMesh.visible = false;
+  scene.add(_circleFramesMesh);
 }
 
 // Periodic cube: the 12 edges only (not a triangulated wireframe) so the
@@ -1340,22 +1440,450 @@ function updateVoxelTransforms() {
   voxelMesh.instanceMatrix.needsUpdate = true;
 }
 
-// Per-cell color + alpha. Two voxel modes:
-//   heat:    color=blue→red by misalignment t, alpha=t^γ (linear default).
-//            Aligned cells fade out; defects pop opaque red.
-//   domains: color=HSL from the cell's +Z direction (hue=azimuth atan2(y,x),
-//            saturation=horiz-component, lightness=elevation z), alpha=
-//            (1−t)^γ. Aligned cells stay opaque in their direction colour;
-//            misaligned cells (domain walls / defects) fade out, so the
-//            visualization reads as colored blobs of aligned domains.
+// 6-connected components on the voxel grid for cells with misalignment ≥
+// threshold, with PBC wrap. Iterative DFS using a flat stack to avoid blowing
+// the JS stack at large N. Output goes into componentId / numComponents.
+function computeComponents(misalignBuf, threshold) {
+  const N = params.N;
+  const total = N * N * N;
+  if (!componentId || componentId.length !== total) {
+    componentId = new Int32Array(total);
+    _ccStack = new Int32Array(total);
+  }
+  componentId.fill(-1);
+  let comps = 0;
+  const stack = _ccStack;
+  const N2 = N * N;
+  for (let start = 0; start < total; start++) {
+    if (misalignBuf[start] < threshold || componentId[start] !== -1) continue;
+    componentId[start] = comps;
+    let sp = 0;
+    stack[sp++] = start;
+    while (sp > 0) {
+      const cell = stack[--sp];
+      const ix = cell % N;
+      const iy = ((cell / N) | 0) % N;
+      const iz = (cell / N2) | 0;
+      // 6 face-adjacent neighbors with PBC wrap (precomputed inline for speed).
+      const ixm = (ix === 0 ? N - 1 : ix - 1);
+      const ixp = (ix === N - 1 ? 0 : ix + 1);
+      const iym = (iy === 0 ? N - 1 : iy - 1);
+      const iyp = (iy === N - 1 ? 0 : iy + 1);
+      const izm = (iz === 0 ? N - 1 : iz - 1);
+      const izp = (iz === N - 1 ? 0 : iz + 1);
+      const yzBase = iy * N + iz * N2;
+      const j0 = ixp + yzBase;
+      const j1 = ixm + yzBase;
+      const j2 = ix + iym * N + iz * N2;
+      const j3 = ix + iyp * N + iz * N2;
+      const j4 = ix + iy * N + izm * N2;
+      const j5 = ix + iy * N + izp * N2;
+      if (misalignBuf[j0] >= threshold && componentId[j0] === -1) { componentId[j0] = comps; stack[sp++] = j0; }
+      if (misalignBuf[j1] >= threshold && componentId[j1] === -1) { componentId[j1] = comps; stack[sp++] = j1; }
+      if (misalignBuf[j2] >= threshold && componentId[j2] === -1) { componentId[j2] = comps; stack[sp++] = j2; }
+      if (misalignBuf[j3] >= threshold && componentId[j3] === -1) { componentId[j3] = comps; stack[sp++] = j3; }
+      if (misalignBuf[j4] >= threshold && componentId[j4] === -1) { componentId[j4] = comps; stack[sp++] = j4; }
+      if (misalignBuf[j5] >= threshold && componentId[j5] === -1) { componentId[j5] = comps; stack[sp++] = j5; }
+    }
+    comps++;
+  }
+  numComponents = comps;
+}
+
+// ─── Voxel-pair → loop inspector ─────────────────────────────────────────
+// Cell index → DISPLAYED world position (cell-centered, with offsetCells
+// applied and PBC wrapped into [-L/2, L/2)). Matches voxel-mesh placement.
+function _cellDisplayPos(cellIdx, out) {
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, s = L / N;
+  const ix = cellIdx % N;
+  const iy = ((cellIdx / N) | 0) % N;
+  const iz = (cellIdx / (N * N)) | 0;
+  const offX = params.offsetCells[0] * s;
+  const offY = params.offsetCells[1] * s;
+  const offZ = params.offsetCells[2] * s;
+  let x = (ix + 0.5) * s - half + offX;
+  let y = (iy + 0.5) * s - half + offY;
+  let z = (iz + 0.5) * s - half + offZ;
+  x -= L * Math.floor((x + half) / L);
+  y -= L * Math.floor((y + half) / L);
+  z -= L * Math.floor((z + half) / L);
+  out[0] = x; out[1] = y; out[2] = z;
+}
+
+// Trilinear-interpolated quaternion at a logical world position with PBC.
+// Sign-fixes all 8 cell-corners to a single reference (the previous loop
+// sample if provided, else the bottom-back-left corner) so the line-field
+// blends coherently — without sign-fixing, ±q copies of the same rotation
+// average to ~0 and the result is meaningless.
+function _sampleQuatLogical(pos, ref, out) {
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, inv_s = N / L;
+  const fx = (pos[0] + half) * inv_s - 0.5;
+  const fy = (pos[1] + half) * inv_s - 0.5;
+  const fz = (pos[2] + half) * inv_s - 0.5;
+  const ix0 = Math.floor(fx);
+  const iy0 = Math.floor(fy);
+  const iz0 = Math.floor(fz);
+  const tx = fx - ix0, ty = fy - iy0, tz = fz - iz0;
+  let sx = 0, sy = 0, sz = 0, sw = 0;
+  let refX = ref ? ref[0] : 0, refY = ref ? ref[1] : 0;
+  let refZ = ref ? ref[2] : 0, refW = ref ? ref[3] : 0;
+  let haveRef = !!ref;
+  for (let kz = 0; kz <= 1; kz++) {
+    const ciz = ((iz0 + kz) % N + N) % N;
+    for (let ky = 0; ky <= 1; ky++) {
+      const ciy = ((iy0 + ky) % N + N) % N;
+      for (let kx = 0; kx <= 1; kx++) {
+        const cix = ((ix0 + kx) % N + N) % N;
+        const ci = (ciz * N + ciy) * N + cix;
+        let cx = state.quats[4*ci    ];
+        let cy = state.quats[4*ci + 1];
+        let cz = state.quats[4*ci + 2];
+        let cw = state.quats[4*ci + 3];
+        if (!haveRef) {
+          refX = cx; refY = cy; refZ = cz; refW = cw;
+          haveRef = true;
+        }
+        if (cx*refX + cy*refY + cz*refZ + cw*refW < 0) {
+          cx = -cx; cy = -cy; cz = -cz; cw = -cw;
+        }
+        const w = ((kx ? tx : 1-tx) * (ky ? ty : 1-ty) * (kz ? tz : 1-tz));
+        sx += w*cx; sy += w*cy; sz += w*cz; sw += w*cw;
+      }
+    }
+  }
+  const len = Math.sqrt(sx*sx + sy*sy + sz*sz + sw*sw);
+  if (len > 1e-8) { out[0] = sx/len; out[1] = sy/len; out[2] = sz/len; out[3] = sw/len; }
+  else { out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 1; }
+}
+
+function _selectVoxel(cellIdx) {
+  if (_selCells.indexOf(cellIdx) !== -1) return;     // ignore re-click on same cell
+  if (_selCells.length >= 2) _selCells.length = 0;   // 3rd click resets
+  _selCells.push(cellIdx);
+  _updateSelectionMarkers();
+  if (_selCells.length === 2) {
+    _refreshLoopInspector();
+  } else {
+    if (_circleLineMesh) _circleLineMesh.visible = false;
+    if (_circleFramesMesh) _circleFramesMesh.visible = false;
+    _quatPlotData = null;
+    _drawQuatPlot();
+  }
+}
+function _clearVoxelSelection() {
+  _selCells.length = 0;
+  _updateSelectionMarkers();
+  if (_circleLineMesh) _circleLineMesh.visible = false;
+  if (_circleFramesMesh) _circleFramesMesh.visible = false;
+  _quatPlotData = null;
+  _drawQuatPlot();
+}
+
+// Place the 2 highlight spheres at the (currently selected) cells. Cells
+// not in the selection are scaled to 0 so they're invisible.
+function _updateSelectionMarkers() {
+  if (!_selMarkerMesh) return;
+  const cellS = params.cubeSize / params.N;
+  const sphereR = cellS * 1.0;        // a bit bigger than a voxel for visibility
+  const tmpPos = [0, 0, 0];
+  for (let i = 0; i < 2; i++) {
+    if (i < _selCells.length) {
+      _cellDisplayPos(_selCells[i], tmpPos);
+      _selScratchMat.makeScale(sphereR, sphereR, sphereR);
+      _selScratchMat.setPosition(tmpPos[0], tmpPos[1], tmpPos[2]);
+    } else {
+      _selScratchMat.makeScale(0, 0, 0);
+    }
+    _selMarkerMesh.setMatrixAt(i, _selScratchMat);
+  }
+  _selMarkerMesh.instanceMatrix.needsUpdate = true;
+  _selMarkerMesh.visible = _selCells.length > 0;
+}
+
+// Compute the inspection circle from the 2 selected cells + sample the
+// quaternion field around it; update the 3D circle/frames meshes and the
+// 2D quaternion plot. Called once on second selection and refreshed every
+// frame as long as 2 cells are selected (so it tracks the field/offset).
+function _refreshLoopInspector() {
+  if (_selCells.length !== 2) return;
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, s = L / N;
+  const offX = params.offsetCells[0] * s;
+  const offY = params.offsetCells[1] * s;
+  const offZ = params.offsetCells[2] * s;
+
+  const A = [0, 0, 0], B = [0, 0, 0];
+  _cellDisplayPos(_selCells[0], A);
+  _cellDisplayPos(_selCells[1], B);
+
+  // Minimum-image displacement (cells may be on opposite sides of the cube).
+  let dx = B[0] - A[0], dy = B[1] - A[1], dz = B[2] - A[2];
+  dx -= L * Math.round(dx / L);
+  dy -= L * Math.round(dy / L);
+  dz -= L * Math.round(dz / L);
+  const segLen = Math.hypot(dx, dy, dz);
+  if (segLen < 1e-6) return;
+  const radius = 0.5 * segLen;
+  const dirX = dx / segLen, dirY = dy / segLen, dirZ = dz / segLen;
+  // Midpoint in displayed coords (might leak slightly out of the cube; ok).
+  const mx = A[0] + 0.5 * dx;
+  const my = A[1] + 0.5 * dy;
+  const mz = A[2] + 0.5 * dz;
+  // Pick u ⊥ dir by removing dir from the world-axis least-aligned with it.
+  let ax, ay, az;
+  if (Math.abs(dirX) <= Math.abs(dirY) && Math.abs(dirX) <= Math.abs(dirZ)) {
+    ax = 1; ay = 0; az = 0;
+  } else if (Math.abs(dirY) <= Math.abs(dirZ)) {
+    ax = 0; ay = 1; az = 0;
+  } else {
+    ax = 0; ay = 0; az = 1;
+  }
+  const adotd = ax*dirX + ay*dirY + az*dirZ;
+  let ux = ax - adotd*dirX, uy = ay - adotd*dirY, uz = az - adotd*dirZ;
+  const ulen = Math.hypot(ux, uy, uz);
+  ux /= ulen; uy /= ulen; uz /= ulen;
+  // v = dir × u
+  const vx = dirY*uz - dirZ*uy;
+  const vy = dirZ*ux - dirX*uz;
+  const vz = dirX*uy - dirY*ux;
+
+  const circlePosArr = _circleLineMesh.geometry.attributes.position.array;
+  const framesPosArr = _circleFramesMesh.geometry.attributes.position.array;
+  const N_samp = SEL_NUM_SAMPLES;
+  const axisLen = Math.max(0.05, radius * 0.20);
+
+  const quats = new Array(N_samp);
+  let prevQ = null;
+  const tmpQ = [0, 0, 0, 0];
+  const logical = [0, 0, 0];
+  for (let i = 0; i < N_samp; i++) {
+    const phi = i * (2 * Math.PI / N_samp);
+    const c = Math.cos(phi), si = Math.sin(phi);
+    const dispX = mx + radius * (c * ux + si * vx);
+    const dispY = my + radius * (c * uy + si * vy);
+    const dispZ = mz + radius * (c * uz + si * vz);
+    // Convert displayed → logical for the quaternion lookup.
+    let lx = dispX - offX, ly = dispY - offY, lz = dispZ - offZ;
+    lx -= L * Math.floor((lx + half) / L);
+    ly -= L * Math.floor((ly + half) / L);
+    lz -= L * Math.floor((lz + half) / L);
+    logical[0] = lx; logical[1] = ly; logical[2] = lz;
+    _sampleQuatLogical(logical, prevQ, tmpQ);
+    quats[i] = [tmpQ[0], tmpQ[1], tmpQ[2], tmpQ[3]];
+    // Sign-fix the result to the previous sample for continuity around
+    // the loop. (The trilinear blend is already sign-fixed within the cube
+    // it samples, but the reference may flip when we cross between cells
+    // that disagree on hemisphere.)
+    if (prevQ) {
+      const d = quats[i][0]*prevQ[0] + quats[i][1]*prevQ[1]
+              + quats[i][2]*prevQ[2] + quats[i][3]*prevQ[3];
+      if (d < 0) {
+        quats[i][0] = -quats[i][0]; quats[i][1] = -quats[i][1];
+        quats[i][2] = -quats[i][2]; quats[i][3] = -quats[i][3];
+      }
+    }
+    prevQ = quats[i];
+
+    // Draw circle vertex at this sample.
+    circlePosArr[3*i    ] = dispX;
+    circlePosArr[3*i + 1] = dispY;
+    circlePosArr[3*i + 2] = dispZ;
+    // Draw the small RGB frame at this sample, oriented by the (sign-fixed)
+    // quaternion. Each axis is one (origin, end) line segment.
+    const qx = quats[i][0], qy = quats[i][1], qz = quats[i][2], qw = quats[i][3];
+    const xx = 1 - 2*(qy*qy + qz*qz);
+    const xy = 2*(qx*qy + qz*qw);
+    const xz = 2*(qx*qz - qy*qw);
+    const yx = 2*(qx*qy - qz*qw);
+    const yy = 1 - 2*(qx*qx + qz*qz);
+    const yz = 2*(qy*qz + qx*qw);
+    const zx = 2*(qx*qz + qy*qw);
+    const zy = 2*(qy*qz - qx*qw);
+    const zz = 1 - 2*(qx*qx + qy*qy);
+    const fi = i * 18;
+    framesPosArr[fi     ] = dispX;             framesPosArr[fi +  1] = dispY;             framesPosArr[fi +  2] = dispZ;
+    framesPosArr[fi +  3] = dispX + xx*axisLen; framesPosArr[fi +  4] = dispY + xy*axisLen; framesPosArr[fi +  5] = dispZ + xz*axisLen;
+    framesPosArr[fi +  6] = dispX;             framesPosArr[fi +  7] = dispY;             framesPosArr[fi +  8] = dispZ;
+    framesPosArr[fi +  9] = dispX + yx*axisLen; framesPosArr[fi + 10] = dispY + yy*axisLen; framesPosArr[fi + 11] = dispZ + yz*axisLen;
+    framesPosArr[fi + 12] = dispX;             framesPosArr[fi + 13] = dispY;             framesPosArr[fi + 14] = dispZ;
+    framesPosArr[fi + 15] = dispX + zx*axisLen; framesPosArr[fi + 16] = dispY + zy*axisLen; framesPosArr[fi + 17] = dispZ + zz*axisLen;
+  }
+  _circleLineMesh.geometry.attributes.position.needsUpdate = true;
+  _circleFramesMesh.geometry.attributes.position.needsUpdate = true;
+  _circleLineMesh.visible = true;
+  _circleFramesMesh.visible = true;
+
+  // Compare last sample to first → Z₂ winding test. We sign-fixed each
+  // sample to the previous one, so q[N-1] is the sign-fix-coherent walk
+  // from q[0]. The "closing" segment (q[N-1] → q[0]) is where the Z₂
+  // disclination shows up: q[N-1]·q[0] ≈ -1 ⇒ the loop is non-contractible
+  // in SO(3); ≈ +1 ⇒ trivial.
+  const q0 = quats[0], qN = quats[N_samp - 1];
+  const dotEnd = q0[0]*qN[0] + q0[1]*qN[1] + q0[2]*qN[2] + q0[3]*qN[3];
+
+  _quatPlotData = { quats, dotEnd, segLen, radius };
+  _drawQuatPlot();
+}
+
+// 2D plot of the four quaternion components (continuously sign-fixed) vs
+// loop angle. The closing-segment dot product q[N-1]·q[0] is annotated as
+// a Z₂ winding flag.
+function _drawQuatPlot() {
+  if (!_quatPlotCtx) return;
+  const w = _quatPlotCanvas.width, h = _quatPlotCanvas.height;
+  _quatPlotCtx.fillStyle = '#0a0d12';
+  _quatPlotCtx.fillRect(0, 0, w, h);
+  // Axes.
+  _quatPlotCtx.strokeStyle = '#1a232f';
+  _quatPlotCtx.lineWidth = 1;
+  _quatPlotCtx.beginPath();
+  _quatPlotCtx.moveTo(0, h/2); _quatPlotCtx.lineTo(w, h/2);
+  _quatPlotCtx.stroke();
+  if (!_quatPlotData) {
+    if (_quatStatusEl) _quatStatusEl.textContent =
+      'components mode: click two voxels to inspect a loop around the segment between them';
+    return;
+  }
+  const quats = _quatPlotData.quats;
+  const Nsamp = quats.length;
+  const labels = ['x', 'y', 'z', 'w'];
+  const colors = ['#ff5050', '#50ff50', '#5080ff', '#dddddd'];
+  const yScale = h * 0.5 - 4;
+  for (let comp = 0; comp < 4; comp++) {
+    _quatPlotCtx.strokeStyle = colors[comp];
+    _quatPlotCtx.lineWidth = 1.3;
+    _quatPlotCtx.beginPath();
+    for (let i = 0; i < Nsamp; i++) {
+      const x = (i / (Nsamp - 1)) * w;
+      const y = h * 0.5 - quats[i][comp] * yScale;
+      if (i === 0) _quatPlotCtx.moveTo(x, y); else _quatPlotCtx.lineTo(x, y);
+    }
+    _quatPlotCtx.stroke();
+    // Tiny color legend in top-left.
+    _quatPlotCtx.fillStyle = colors[comp];
+    _quatPlotCtx.fillText(labels[comp], 4 + comp*10, 10);
+  }
+  if (_quatStatusEl) {
+    const d = _quatPlotData.dotEnd;
+    const verdict = d < -0.5
+      ? 'Z₂ winding ✓  (q_end·q_start ≈ −1, non-contractible loop)'
+      : d > 0.5
+        ? 'trivial loop  (q_end·q_start ≈ +1)'
+        : 'ambiguous (loop too coarse / line missed?)';
+    _quatStatusEl.textContent =
+      `seg=${_quatPlotData.segLen.toFixed(2)}  ·  q_end·q_start=${d.toFixed(3)}  ·  ${verdict}`;
+  }
+}
+
+function _onMainCanvasPointerDown(e) {
+  if (e.button !== 0) return;
+  _mouseDownPos = [e.clientX, e.clientY];
+}
+function _onMainCanvasPointerUp(e) {
+  if (e.button !== 0 || !_mouseDownPos) return;
+  const dx = e.clientX - _mouseDownPos[0];
+  const dy = e.clientY - _mouseDownPos[1];
+  _mouseDownPos = null;
+  if (Math.abs(dx) > 4 || Math.abs(dy) > 4) return;     // it was a drag, ignore
+  if (params.renderMode !== 'components') return;       // only meaningful here
+  if (!voxelMesh || !voxelMesh.visible || !componentId) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  _ndcMouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  _ndcMouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  _raycaster.setFromCamera(_ndcMouse, camera);
+  const hits = _raycaster.intersectObject(voxelMesh, false);
+  // The raycaster doesn't know about per-instance alpha (alphaToCoverage),
+  // so it returns hits on below-threshold voxels too. Walk hits front-to-back
+  // and pick the first above-threshold one.
+  for (const hit of hits) {
+    const id = hit.instanceId;
+    if (id !== undefined && componentId[id] >= 0) {
+      _selectVoxel(id);
+      return;
+    }
+  }
+}
+
+// Render a 1-D histogram of voxelMisalignBuf into the small canvas under
+// the direction histogram. Linear x bins ∈ [0, 1], log y so the high-mis
+// tail (the defect lines) is visible alongside the bulk-aligned spike.
+// Bar hue follows the heat colormap so the histogram reads in the same
+// language as the voxel field. Threshold position is marked as a yellow
+// vertical line when in components mode.
+function drawMisalignHistogram() {
+  if (!misHistCtx || !voxelMisalignBuf) return;
+  const w = misHistCanvas.width, h = misHistCanvas.height;
+  misHistCtx.fillStyle = '#0a0d12';
+  misHistCtx.fillRect(0, 0, w, h);
+
+  const numBins = MIS_HIST_BINS;
+  const bins = _misHistBins;
+  for (let i = 0; i < numBins; i++) bins[i] = 0;
+  const total = voxelMisalignBuf.length;
+  for (let i = 0; i < total; i++) {
+    let b = (voxelMisalignBuf[i] * numBins) | 0;
+    if (b < 0) b = 0;
+    else if (b >= numBins) b = numBins - 1;
+    bins[b]++;
+  }
+  let maxCount = 1;
+  for (let i = 0; i < numBins; i++) if (bins[i] > maxCount) maxCount = bins[i];
+  const logMax = Math.log10(maxCount + 1);
+  const barW = w / numBins;
+  for (let i = 0; i < numBins; i++) {
+    const c = bins[i];
+    if (c === 0) continue;
+    const hNorm = Math.log10(c + 1) / logMax;
+    const barH = hNorm * (h - 2);
+    const tCenter = (i + 0.5) / numBins;
+    misHistCtx.fillStyle = `hsl(${(1 - tCenter) * 240}, 85%, ${(0.20 + 0.40 * tCenter) * 100}%)`;
+    misHistCtx.fillRect(i * barW, h - barH, Math.max(1, barW - 0.5), barH);
+  }
+  if (params.renderMode === 'components') {
+    const xT = params.misThreshold * w;
+    misHistCtx.strokeStyle = '#ffff66';
+    misHistCtx.lineWidth = 1.5;
+    misHistCtx.beginPath();
+    misHistCtx.moveTo(xT, 0); misHistCtx.lineTo(xT, h);
+    misHistCtx.stroke();
+  }
+}
+
+// Per-cell color + alpha. Three voxel modes:
+//   heat:       color=blue→red by misalignment t, alpha=t^γ.
+//   domains:    color=HSL from cell's +Z direction, alpha=(1−t)^γ.
+//   components: cells below threshold → alpha=0, above → alpha=1, color
+//               from a deterministic hue per-component-index.
+// fillCellMisalignment is called once at the top of animate() (so the
+// histogram + components share the same buffer); this function just reads
+// voxelMisalignBuf.
 function updateVoxelColors() {
-  fillCellMisalignment(state, voxelMisalignBuf);
   const total = voxelMisalignBuf.length;
   const inv = 1 / Math.max(0.01, params.misalignCap);
   const gamma = params.alphaGamma;
   const linearGamma = Math.abs(gamma - 1) < 1e-6;
   const TWO_PI_INV = 1 / (2 * Math.PI);
-  if (params.renderMode === 'domains') {
+  if (params.renderMode === 'components') {
+    computeComponents(voxelMisalignBuf, params.misThreshold);
+    for (let i = 0; i < total; i++) {
+      const cid = componentId[i];
+      if (cid < 0) {
+        // Below threshold → invisible. Color doesn't matter but keep set.
+        _voxelColor.setRGB(0, 0, 0);
+        voxelMesh.setColorAt(i, _voxelColor);
+        voxelAlphaBuf[i] = 0;
+      } else {
+        // Hue from the component index using the golden-ratio conjugate so
+        // even adjacent component IDs land on widely separated hues.
+        const hue = (cid * 0.6180339887) % 1;
+        _voxelColor.setHSL(hue, 0.85, 0.55);
+        voxelMesh.setColorAt(i, _voxelColor);
+        voxelAlphaBuf[i] = 1;
+      }
+    }
+  } else if (params.renderMode === 'domains') {
     for (let i = 0; i < total; i++) {
       let t = voxelMisalignBuf[i] * inv;
       if (t > 1) t = 1;
@@ -1394,13 +1922,17 @@ function updateVoxelColors() {
 // rules. .mode-voxel is shown for either of them.
 function applyRenderMode() {
   const m = params.renderMode;
-  const isVoxel = m === 'heat' || m === 'domains';
+  const isVoxel = m === 'heat' || m === 'domains' || m === 'components';
   if (lines)     lines.visible     = m === 'axes';
   if (voxelMesh) voxelMesh.visible = isVoxel;
   for (const el of document.querySelectorAll('.mode-axes'))
     el.style.display = m === 'axes' ? '' : 'none';
   for (const el of document.querySelectorAll('.mode-voxel'))
-    el.style.display = isVoxel ? '' : 'none';
+    el.style.display = (m === 'heat' || m === 'domains') ? '' : 'none';
+  for (const el of document.querySelectorAll('.mode-components'))
+    el.style.display = m === 'components' ? '' : 'none';
+  // Voxel-pair selection only makes sense in components mode.
+  if (m !== 'components') _clearVoxelSelection();
 }
 
 const statsEl = document.getElementById('stats');
@@ -1442,9 +1974,12 @@ function animate() {
       obsMapDirty = false;
     }
   }
-  // Fill +Z directions first — they feed both the histogram and the
-  // domain-mode voxel coloring (hue from azimuth, lightness from elevation).
+  // Fill +Z directions and per-cell misalignment up-front — both feed
+  // multiple consumers (the +Z direction histogram, the misalignment
+  // 1-D histogram, the components computation, and several voxel modes).
+  // Computing once per frame here keeps them coherent.
   fillZDirections(state, dirsBuf);
+  fillCellMisalignment(state, voxelMisalignBuf);
   if (params.renderMode === 'axes') {
     fillAxesGeometry(state, params.axisLen, axesBuf, params.offsetCells);
     lineGeom.attributes.position.needsUpdate = true;
@@ -1453,6 +1988,14 @@ function animate() {
   }
   updatePaths();
   hist.update(dirsBuf, params.N * params.N * params.N);
+  drawMisalignHistogram();
+  if (_selCells.length === 2 && params.renderMode === 'components') {
+    // Re-sample around the loop every frame: the field may be evolving (if
+    // alignment is running), the threshold or offset may have changed, and
+    // either way the cheap cost (~SEL_NUM_SAMPLES interpolated lookups)
+    // keeps the inspector in sync with whatever's happening.
+    _refreshLoopInspector();
+  }
   hist.syncCamera(camera);
   controls.update();
   renderer.render(scene, camera);
@@ -1471,11 +2014,15 @@ function animate() {
     }
     const total = params.N ** 3;
     const o = params.offsetCells;
-    statsEl.textContent =
+    let txt =
       `${total} frames · ${fps} fps · η=${params.eta.toFixed(2)} · `
       + `noise=${params.noise.toFixed(3)} · `
       + `misalign=${lastMisalign.toFixed(3)} · `
       + `offset=(${o[0]},${o[1]},${o[2]})`;
+    if (params.renderMode === 'components') {
+      txt += ` · ${numComponents} components @ thr=${params.misThreshold.toFixed(2)}`;
+    }
+    statsEl.textContent = txt;
   }
 }
 
@@ -1486,6 +2033,22 @@ rebuildCube();
 rebuildGrid();
 buildPaths();
 hist = createDirectionHistogram(document.getElementById('histCanvas'));
+misHistCanvas = document.getElementById('misHistCanvas');
+// Match the canvas backing-store to its CSS size for crisp 1-D bars.
+misHistCanvas.width  = misHistCanvas.clientWidth || 220;
+misHistCanvas.height = misHistCanvas.clientHeight || 60;
+misHistCtx = misHistCanvas.getContext('2d');
+_quatPlotCanvas = document.getElementById('quatPlotCanvas');
+_quatPlotCanvas.width  = _quatPlotCanvas.clientWidth || 220;
+_quatPlotCanvas.height = _quatPlotCanvas.clientHeight || 80;
+_quatPlotCtx = _quatPlotCanvas.getContext('2d');
+_quatStatusEl = document.getElementById('quatStatus');
+_drawQuatPlot();
+// Click-to-select on the main canvas (drag-vs-click distinction). Bound to
+// the THREE renderer's canvas, not the window, so the observer panel
+// doesn't grab these events when it's open.
+renderer.domElement.addEventListener('pointerdown', _onMainCanvasPointerDown);
+renderer.domElement.addEventListener('pointerup',   _onMainCanvasPointerUp);
 
 // UI bindings. `change` (vs `input`) lets us cheap-update params on every
 // keystroke but only rebuild the heavy bits when the user commits the value.
@@ -1513,6 +2076,7 @@ bindRange('axisLen', 'axisLen');
 bindRange('voxelScale', 'voxelScale');
 bindRange('misalignCap', 'misalignCap');
 bindRange('alphaGamma', 'alphaGamma');
+bindRange('misThreshold', 'misThreshold');
 bindRange('pathSeeds', 'pathSeeds');
 bindRange('pathStepFrac', 'pathStepFrac');
 bindRange('obsGridSize', 'obsGridSize');
