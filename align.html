@@ -8,7 +8,7 @@
     font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
   #ui { position: fixed; top: 10px; left: 10px; padding: 10px 12px;
     background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 6px;
-    backdrop-filter: blur(6px); min-width: 240px; max-height: calc(100vh - 510px);
+    backdrop-filter: blur(6px); min-width: 240px; max-height: calc(100vh - 360px);
     overflow-y: auto; }
   #ui h1 { font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; color: #9ad8ff; }
   #ui label { display: flex; justify-content: space-between; gap: 8px;
@@ -21,20 +21,28 @@
   #ui button:hover { background: #283544; }
   #ui .row { margin-top: 6px; }
   #ui hr { border: none; border-top: 1px solid #25303d; margin: 7px 0; }
-  #histPanel { position: fixed; left: 10px; bottom: 40px; width: 240px;
+  /* Bottom-left panel: three columns, left-to-right.
+       Col 1: +Z direction histogram (sphere).
+       Col 2: misalignment 1-D histogram (top), quaternion-around-loop plot (below).
+       Col 3: rotation-vector ball (radius π) of the same loop. */
+  #histPanel { position: fixed; left: 10px; bottom: 40px;
     padding: 8px 10px; background: rgba(15,20,28,0.78);
     border: 1px solid #25303d; border-radius: 6px; backdrop-filter: blur(6px);
-    display: flex; flex-direction: column; }
+    display: flex; flex-direction: row; gap: 12px; align-items: flex-start; }
+  #histPanel > div { display: flex; flex-direction: column; width: 220px; }
   #histPanel h2 { font-size: 11px; margin: 0 0 6px; color: #9ad8ff;
     letter-spacing: .04em; font-weight: normal; }
-  #histCanvas { display: block; width: 220px; height: 220px; background: transparent; }
   #histPanel h3 { font-size: 11px; margin: 8px 0 4px; color: #9ad8ff;
     letter-spacing: .04em; font-weight: normal; }
-  #misHistCanvas { display: block; width: 220px; height: 60px; background: #0a0d12;
+  #histPanel > div > h2:first-child,
+  #histPanel > div > h3:first-child { margin-top: 0; }
+  #histCanvas      { display: block; width: 220px; height: 220px; background: transparent; }
+  #misHistCanvas   { display: block; width: 220px; height: 60px;  background: #0a0d12;
     border: 1px solid #1a232f; }
-  #quatPlotCanvas { display: block; width: 220px; height: 80px; background: #0a0d12;
+  #quatPlotCanvas  { display: block; width: 220px; height: 80px;  background: #0a0d12;
     border: 1px solid #1a232f; }
-  #quatStatus { font-size: 10px; color: #7a8696; margin-top: 4px; line-height: 1.3; }
+  #quatBallCanvas  { display: block; width: 220px; height: 220px; background: transparent; }
+  #quatStatus      { font-size: 10px; color: #7a8696; margin-top: 4px; line-height: 1.3; }
   #stats { position: fixed; bottom: 10px; left: 10px; padding: 6px 9px;
     background: rgba(15,20,28,0.78); border: 1px solid #25303d; border-radius: 4px;
     font-variant-numeric: tabular-nums; }
@@ -109,13 +117,21 @@
 </div>
 
 <div id="histPanel">
-  <h2>+Z direction histogram</h2>
-  <canvas id="histCanvas"></canvas>
-  <h3>misalignment histogram (log y)</h3>
-  <canvas id="misHistCanvas"></canvas>
-  <h3>quaternion around loop</h3>
-  <canvas id="quatPlotCanvas"></canvas>
-  <div id="quatStatus">components mode: click two voxels to inspect a loop around the segment between them</div>
+  <div>
+    <h2>+Z direction histogram</h2>
+    <canvas id="histCanvas"></canvas>
+  </div>
+  <div>
+    <h3>misalignment histogram (log y)</h3>
+    <canvas id="misHistCanvas"></canvas>
+    <h3>quaternion around loop</h3>
+    <canvas id="quatPlotCanvas"></canvas>
+    <div id="quatStatus">components mode: click two voxels to inspect a loop around the segment between them</div>
+  </div>
+  <div>
+    <h3>rotation-vector ball (radius π, oriented like the cube)</h3>
+    <canvas id="quatBallCanvas"></canvas>
+  </div>
 </div>
 
 <div id="obsPanel">
@@ -209,6 +225,8 @@ let _circleLineMesh = null;           // LineLoop drawing the circle in 3D
 let _circleFramesMesh = null;         // LineSegments: small RGB frames at each sample
 let _quatPlotCanvas, _quatPlotCtx, _quatStatusEl;
 let _quatPlotData = null;             // {quats, dotEnd, axisRgb, ...} or null
+let rotationBall = null;              // 3D rotation-vector view of the loop
+let _rotVecsBuf = null;               // Float32Array, length 3*SEL_NUM_SAMPLES
 const SEL_NUM_SAMPLES = 64;
 const _raycaster = new THREE.Raycaster();
 const _ndcMouse = new THREE.Vector2();
@@ -1570,6 +1588,7 @@ function _selectVoxel(cellIdx) {
     if (_circleFramesMesh) _circleFramesMesh.visible = false;
     _quatPlotData = null;
     _drawQuatPlot();
+    if (rotationBall) rotationBall.clear();
   }
 }
 function _clearVoxelSelection() {
@@ -1579,6 +1598,7 @@ function _clearVoxelSelection() {
   if (_circleFramesMesh) _circleFramesMesh.visible = false;
   _quatPlotData = null;
   _drawQuatPlot();
+  if (rotationBall) rotationBall.clear();
 }
 
 // Place the 2 highlight spheres at the (currently selected) cells. Cells
@@ -1725,6 +1745,205 @@ function _refreshLoopInspector() {
 
   _quatPlotData = { quats, dotEnd, segLen, radius };
   _drawQuatPlot();
+
+  // Feed the rotation-vector ball: per-sample sign-fix to w ≥ 0, then
+  // v = θ · axis with θ ∈ [0, π].
+  if (rotationBall) {
+    if (!_rotVecsBuf || _rotVecsBuf.length !== N_samp * 3) {
+      _rotVecsBuf = new Float32Array(N_samp * 3);
+    }
+    for (let i = 0; i < N_samp; i++) {
+      let qx = quats[i][0], qy = quats[i][1], qz = quats[i][2], qw = quats[i][3];
+      if (qw < 0) { qx = -qx; qy = -qy; qz = -qz; qw = -qw; }
+      const sinHalf = Math.sqrt(qx*qx + qy*qy + qz*qz);
+      if (sinHalf < 1e-8) {
+        _rotVecsBuf[3*i    ] = 0;
+        _rotVecsBuf[3*i + 1] = 0;
+        _rotVecsBuf[3*i + 2] = 0;
+      } else {
+        const angle = 2 * Math.atan2(sinHalf, qw);
+        const k = angle / sinHalf;
+        _rotVecsBuf[3*i    ] = qx * k;
+        _rotVecsBuf[3*i + 1] = qy * k;
+        _rotVecsBuf[3*i + 2] = qz * k;
+      }
+    }
+    rotationBall.update(_rotVecsBuf, N_samp);
+  }
+}
+
+// 3D rotation-vector view of the loop. Each quaternion is sign-flipped so
+// w ≥ 0 and converted to a rotation vector v = θ·axis with |v| ∈ [0, π].
+// The points are drawn as small spheres in a wireframe ball of radius π,
+// connected by line segments — except for consecutive samples whose
+// rotation vectors land more than π apart, which are skipped (those occur
+// when the loop crosses the antipodal "boundary" of the ball, i.e. when
+// the underlying line-field flipped sign between the two samples — the
+// signature of a Z₂ disclination).
+//
+// The ball's camera mirrors the main scene's camera each frame, so the
+// ball rotates in lockstep with the cube and its rotation-vector axes
+// (red=+X, green=+Y, blue=+Z) point the same way as the cube's.
+function createRotationBall(canvas) {
+  const w = canvas.clientWidth || 220;
+  const h = canvas.clientHeight || 220;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(devicePixelRatio);
+  renderer.setSize(w, h, false);
+
+  const scene = new THREE.Scene();
+  // FOV / distance picked so a radius-π ball fills the canvas with a
+  // small margin: 2·9·tan(22.5°) ≈ 7.45 vs ball diameter 2π ≈ 6.28.
+  const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 50);
+  camera.position.set(0, 0, 9);
+  camera.lookAt(0, 0, 0);
+
+  // Six reference great circles in the world XY/XZ/YZ planes: 3 at the
+  // boundary radius π (brighter) and 3 at the half-radius π/2 (dimmer)
+  // so the radial scale is readable at a glance. Replaces the dense
+  // wireframe sphere whose tiny line web visually averaged toward a
+  // "shell" and hid where each dot's true distance from the origin was.
+  {
+    const segsPerCircle = 64;
+    const conf = [
+      [Math.PI,     0, 0.22, 0.28, 0.38],
+      [Math.PI,     1, 0.22, 0.28, 0.38],
+      [Math.PI,     2, 0.22, 0.28, 0.38],
+      [Math.PI / 2, 0, 0.12, 0.16, 0.22],
+      [Math.PI / 2, 1, 0.12, 0.16, 0.22],
+      [Math.PI / 2, 2, 0.12, 0.16, 0.22],
+    ];
+    const positions = new Float32Array(conf.length * segsPerCircle * 6);
+    const colors    = new Float32Array(conf.length * segsPerCircle * 6);
+    let p = 0;
+    for (const [r, plane, R, G, B] of conf) {
+      for (let i = 0; i < segsPerCircle; i++) {
+        const a = (i / segsPerCircle) * 2 * Math.PI;
+        const b = ((i + 1) / segsPerCircle) * 2 * Math.PI;
+        const ca = Math.cos(a) * r, sa = Math.sin(a) * r;
+        const cb = Math.cos(b) * r, sb = Math.sin(b) * r;
+        let x0,y0,z0,x1,y1,z1;
+        if (plane === 0)      { x0=ca; y0=sa; z0=0;  x1=cb; y1=sb; z1=0;  }
+        else if (plane === 1) { x0=ca; y0=0;  z0=sa; x1=cb; y1=0;  z1=sb; }
+        else                  { x0=0;  y0=ca; z0=sa; x1=0;  y1=cb; z1=sb; }
+        positions[p   ] = x0; positions[p+ 1] = y0; positions[p+ 2] = z0;
+        positions[p+ 3] = x1; positions[p+ 4] = y1; positions[p+ 5] = z1;
+        colors[p     ] = R; colors[p +  1] = G; colors[p +  2] = B;
+        colors[p +  3] = R; colors[p +  4] = G; colors[p +  5] = B;
+        p += 6;
+      }
+    }
+    const refGeom = new THREE.BufferGeometry();
+    refGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    refGeom.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
+    scene.add(new THREE.LineSegments(refGeom, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.9,
+    })));
+  }
+
+  // World-axis lines (red +X, green +Y, blue +Z) through the origin so the
+  // rotation-axis direction at each dot can be read in the cube's frame.
+  const axesPos = new Float32Array([
+    -Math.PI, 0, 0,  Math.PI, 0, 0,
+    0, -Math.PI, 0,  0, Math.PI, 0,
+    0, 0, -Math.PI,  0, 0, Math.PI,
+  ]);
+  const axesCol = new Float32Array([
+    1.00, 0.30, 0.30,  1.00, 0.30, 0.30,
+    0.30, 1.00, 0.30,  0.30, 1.00, 0.30,
+    0.40, 0.50, 1.00,  0.40, 0.50, 1.00,
+  ]);
+  const axesGeom = new THREE.BufferGeometry();
+  axesGeom.setAttribute('position', new THREE.BufferAttribute(axesPos, 3));
+  axesGeom.setAttribute('color',    new THREE.BufferAttribute(axesCol, 3));
+  scene.add(new THREE.LineSegments(axesGeom, new THREE.LineBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.5,
+  })));
+
+  // Origin marker — identity rotation. Anchors "θ = 0" so radii read
+  // unambiguously even when the loop is far out near the boundary.
+  scene.add(new THREE.Mesh(
+    new THREE.SphereGeometry(0.06, 12, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  ));
+
+  // Loop polyline: at most numSamples segments × 2 verts each; each segment
+  // either is or isn't drawn (drawRange masks the excluded ones).
+  const MAX_SAMPLES = 256;
+  const loopPos = new Float32Array(MAX_SAMPLES * 6);
+  const loopGeom = new THREE.BufferGeometry();
+  loopGeom.setAttribute('position', new THREE.BufferAttribute(loopPos, 3));
+  loopGeom.setDrawRange(0, 0);
+  const loopMesh = new THREE.LineSegments(loopGeom, new THREE.LineBasicMaterial({
+    color: 0xffff66, transparent: true, opacity: 0.95,
+  }));
+  scene.add(loopMesh);
+
+  // Loop dots: small spheres at each rotation-vector position. Slightly
+  // bigger than the origin marker so the loop's radial spread is obvious.
+  const dotsGeo = new THREE.SphereGeometry(0.13, 10, 8);
+  const dotsMat = new THREE.MeshBasicMaterial({ color: 0xff9966 });
+  const dotsMesh = new THREE.InstancedMesh(dotsGeo, dotsMat, MAX_SAMPLES);
+  dotsMesh.count = 0;
+  scene.add(dotsMesh);
+
+  const _ballMat = new THREE.Matrix4();
+  const WRAP_THRESHOLD = Math.PI;
+
+  return {
+    update(rotVecs, numSamples) {
+      // Place the dots.
+      dotsMesh.count = numSamples;
+      for (let i = 0; i < numSamples; i++) {
+        _ballMat.makeTranslation(rotVecs[3*i], rotVecs[3*i + 1], rotVecs[3*i + 2]);
+        dotsMesh.setMatrixAt(i, _ballMat);
+      }
+      dotsMesh.instanceMatrix.needsUpdate = true;
+      // Connect consecutive samples i → (i+1) mod N, skipping segments
+      // whose endpoints are >π apart (antipodal wrap).
+      let segCount = 0;
+      for (let i = 0; i < numSamples; i++) {
+        const j = (i + 1) % numSamples;
+        const dx = rotVecs[3*i    ] - rotVecs[3*j    ];
+        const dy = rotVecs[3*i + 1] - rotVecs[3*j + 1];
+        const dz = rotVecs[3*i + 2] - rotVecs[3*j + 2];
+        if (Math.hypot(dx, dy, dz) > WRAP_THRESHOLD) continue;
+        const off = segCount * 6;
+        loopPos[off    ] = rotVecs[3*i    ];
+        loopPos[off + 1] = rotVecs[3*i + 1];
+        loopPos[off + 2] = rotVecs[3*i + 2];
+        loopPos[off + 3] = rotVecs[3*j    ];
+        loopPos[off + 4] = rotVecs[3*j + 1];
+        loopPos[off + 5] = rotVecs[3*j + 2];
+        segCount++;
+      }
+      loopGeom.setDrawRange(0, segCount * 2);
+      loopGeom.attributes.position.needsUpdate = true;
+    },
+
+    clear() {
+      dotsMesh.count = 0;
+      loopGeom.setDrawRange(0, 0);
+    },
+
+    syncCamera(mainCamera) {
+      // Reuse the direction-histogram trick: place the camera along the
+      // same ray as the main camera, at a fixed distance.
+      const px = mainCamera.position.x;
+      const py = mainCamera.position.y;
+      const pz = mainCamera.position.z;
+      const len = Math.hypot(px, py, pz);
+      if (len < 1e-6) return;
+      const s = 9 / len;
+      camera.position.set(px * s, py * s, pz * s);
+      camera.up.copy(mainCamera.up);
+      camera.lookAt(0, 0, 0);
+    },
+
+    render() {
+      renderer.render(scene, camera);
+    },
+  };
 }
 
 // 2D plot of the four quaternion components (continuously sign-fixed) vs
@@ -2000,6 +2219,10 @@ function animate() {
   controls.update();
   renderer.render(scene, camera);
   hist.render();
+  if (rotationBall) {
+    rotationBall.syncCamera(camera);
+    rotationBall.render();
+  }
 
   frame++;
   const now = performance.now();
@@ -2044,6 +2267,7 @@ _quatPlotCanvas.height = _quatPlotCanvas.clientHeight || 80;
 _quatPlotCtx = _quatPlotCanvas.getContext('2d');
 _quatStatusEl = document.getElementById('quatStatus');
 _drawQuatPlot();
+rotationBall = createRotationBall(document.getElementById('quatBallCanvas'));
 // Click-to-select on the main canvas (drag-vs-click distinction). Bound to
 // the THREE renderer's canvas, not the window, so the observer panel
 // doesn't grab these events when it's open.
