@@ -2,34 +2,45 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>2D Gravity (1+1) — sourceless mass-flow on a torus</title>
+<title>2D gravity v2 — sourceless mass-flow with prescribed curl</title>
 <style>
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0a0a10; color: #e8e8ee; margin: 0; padding: 12px; }
   h1 { font-size: 16px; margin: 0 0 6px 0; color: #ccd; }
-  p.lead { font-size: 11px; color: #889; max-width: 900px; line-height: 1.4; margin: 0 0 10px 0; }
+  p.lead { font-size: 11px; color: #889; max-width: 920px; line-height: 1.45; margin: 0 0 10px 0; }
+  p.lead code { color: #cdc; }
   button { padding: 4px 10px; background: #222; color: #eee; border: 1px solid #555; cursor: pointer; font-family: inherit; font-size: 12px; }
   button.active { background: #2a4a6a; border-color: #69a; }
   button:hover { background: #2c2c34; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
   .panel { background: #14141c; padding: 8px; border-radius: 4px; border: 1px solid #222; }
   canvas { background: #000; image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
-  .controls { display: grid; grid-template-columns: auto 1fr 56px; gap: 4px 8px; align-items: center; width: 360px; }
+  .controls { display: grid; grid-template-columns: auto 1fr 64px; gap: 4px 8px; align-items: center; width: 380px; }
   .controls input[type=range] { width: 100%; }
+  .controls input[type=checkbox], .controls select { justify-self: start; }
+  .controls select { background: #222; color: #eee; border: 1px solid #555; font-family: inherit; font-size: 11px; }
   .controls label { white-space: nowrap; font-size: 11px; }
-  .controls .val { font-size: 11px; color: #aac; text-align: right; }
+  .controls .val { font-size: 11px; color: #aac; text-align: right; font-variant-numeric: tabular-nums; }
   .vislabel { font-size: 11px; color: #aac; margin-bottom: 4px; }
-  #status { font-size: 11px; color: #aac; margin-top: 8px; line-height: 1.5; max-width: 360px; }
-  .legend { font-size: 10px; color: #889; max-width: 360px; line-height: 1.4; margin-top: 8px; }
+  #status { font-size: 11px; color: #aac; margin-top: 8px; line-height: 1.5; max-width: 380px; font-variant-numeric: tabular-nums; }
+  .legend { font-size: 10px; color: #889; max-width: 380px; line-height: 1.4; margin-top: 8px; }
 </style>
 </head>
 <body>
-<h1>2D gravity — sourceless mass-flow on a torus</h1>
+<h1>2D gravity v2 — sourceless flow + prescribed curl</h1>
 <p class="lead">
-M is a sourceless vector field whose direction is the local arrow-of-time and whose length is mass.
-Φ is a scalar potential satisfying ∇²Φ = |M| − ⟨|M|⟩; the potential vector field is P = −∇Φ, so P points
-toward concentrations of |M| with magnitude growing roughly as distance × mass. Each step bends M
-perpendicular to itself toward P (preserving |M|), then projects M back onto the divergence-free
-subspace via a Helmholtz / pressure projection. Edges wrap.
+<b>M</b> is a 2D mass-flow field on a periodic <code>N×N</code> torus, kept sourceless (<code>∇·M = 0</code>);
+<b>ω</b> is a scalar curl field and we want <code>curl(M) = ω</code>.
+At each step we (1) recompute the target curl via the literal kernel
+<code>ω<sub>target</sub>(q) = κ · Σ<sub>p</sub> [m(p) · (q−p)] / |q−p|²</code> (or the cross-product variant)
+using minimum-image distances on the torus; (2) relax ω toward ω<sub>target</sub>;
+(3) push <code>curl(M)</code> toward ω by adding <code>∇<sup>⊥</sup>ψ</code> where <code>−∇²ψ = ω − curl(M)</code>;
+(4) project M onto the divergence-free subspace via <code>M ← M − ∇χ</code>, <code>∇²χ = ∇·M</code>;
+(5) rescale M so <code>Σ|M|</code> equals its value at Randomize.
+<br>
+<i>Caveat re. the dot kernel:</i> on the torus its convolution is morally <code>∇<sup>−2</sup>(∇·M)</code>, so once
+M is div-free it returns ω<sub>target</sub>=0 and the system relaxes to uniform flow. The <b>cross</b> variant
+returns the smoothed self-curl <code>∇<sup>−2</sup>(curl M)</code> which is non-trivial — try it. κ is signed so
+you can flip the orientation of either kernel.
 </p>
 
 <div class="row">
@@ -42,213 +53,252 @@ subspace via a Helmholtz / pressure projection. Edges wrap.
       <button id="btnIter">Iterate</button>
     </div>
     <div class="controls">
-      <label>N (grid)</label>     <input id="ctlN"      type="range" min="16"  max="128" step="8"     value="64"><span class="val" id="lblN"></span>
-      <label>cell px</label>      <input id="ctlCell"  type="range" min="2"   max="14"  step="1"     value="6"><span class="val" id="lblCell"></span>
-      <label>dt</label>           <input id="ctlDt"    type="range" min="0"   max="0.5" step="0.005" value="0.10"><span class="val" id="lblDt"></span>
-      <label>bend strength</label><input id="ctlBend"  type="range" min="0"   max="3"   step="0.01"  value="1.00"><span class="val" id="lblBend"></span>
-      <label>parallel pull</label><input id="ctlPara"  type="range" min="0"   max="1"   step="0.01"  value="0.00"><span class="val" id="lblPara"></span>
-      <label>jitter amt</label>   <input id="ctlJitter" type="range" min="0"  max="1"   step="0.01"  value="0.10"><span class="val" id="lblJitter"></span>
-      <label>damping</label>      <input id="ctlDamp"  type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
-      <label>div-free iters</label><input id="ctlDivIt" type="range" min="0" max="80"  step="1"     value="30"><span class="val" id="lblDivIt"></span>
-      <label>potential iters</label><input id="ctlPotIt" type="range" min="0" max="80" step="1"     value="30"><span class="val" id="lblPotIt"></span>
-      <label>arrow scale</label>  <input id="ctlArrow" type="range" min="0.1" max="3"  step="0.05"  value="1.00"><span class="val" id="lblArrow"></span>
-      <label>arrow stride</label> <input id="ctlStride" type="range" min="1" max="6"  step="1"      value="1"><span class="val" id="lblStride"></span>
-      <label>log brightness</label><input id="ctlLog" type="checkbox"><span class="val">&nbsp;</span>
+      <label>N (grid)</label>      <input id="ctlN"      type="range" min="12"  max="48"   step="2"     value="24"><span class="val" id="lblN"></span>
+      <label>cell px</label>       <input id="ctlCell"   type="range" min="4"   max="22"   step="1"     value="10"><span class="val" id="lblCell"></span>
+      <label>kernel</label>        <select id="ctlKernel"><option value="dot">dot(m, q−p) / |q−p|²</option><option value="cross">cross(m, q−p) / |q−p|²</option></select><span class="val">&nbsp;</span>
+      <label>κ (kernel coef)</label><input id="ctlKappa" type="range" min="-2"  max="2"    step="0.005" value="0.10"><span class="val" id="lblKappa"></span>
+      <label>dt</label>            <input id="ctlDt"     type="range" min="0"   max="1"    step="0.005" value="0.20"><span class="val" id="lblDt"></span>
+      <label>ω relax rate</label>  <input id="ctlOmegaR" type="range" min="0"   max="3"    step="0.01"  value="1.00"><span class="val" id="lblOmegaR"></span>
+      <label>curl-fix rate</label> <input id="ctlCurlR"  type="range" min="0"   max="2"    step="0.01"  value="1.00"><span class="val" id="lblCurlR"></span>
+      <label>jitter amt</label>    <input id="ctlJitter" type="range" min="0"   max="1"    step="0.01"  value="0.05"><span class="val" id="lblJitter"></span>
+      <label>damping</label>       <input id="ctlDamp"   type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
+      <label>div-free iters</label><input id="ctlDivIt"  type="range" min="0"   max="80"   step="1"     value="30"><span class="val" id="lblDivIt"></span>
+      <label>curl-fix iters</label><input id="ctlPsiIt"  type="range" min="0"   max="80"   step="1"     value="30"><span class="val" id="lblPsiIt"></span>
+      <label>arrow scale</label>   <input id="ctlArrow"  type="range" min="0.1" max="3"    step="0.05"  value="1.00"><span class="val" id="lblArrow"></span>
+      <label>arrow stride</label>  <input id="ctlStride" type="range" min="1"   max="6"    step="1"     value="1"><span class="val" id="lblStride"></span>
+      <label>conserve mass</label> <input id="ctlConsv" type="checkbox" checked><span class="val">&nbsp;</span>
+      <label>log brightness</label><input id="ctlLog"   type="checkbox"><span class="val">&nbsp;</span>
     </div>
     <div id="status"></div>
     <div class="legend">
-      <b>Bend</b> rotates M in the plane toward P (perp component) so |M| is conserved.
-      <b>Parallel pull</b> additionally projects P onto M (≠ 0 lets matter accumulate or burn off).
-      <b>Damping</b> shrinks |M| each step.
-      <b>div-free / potential iters</b> control Jacobi-relaxation depth.
+      Kernel sum is O(N⁴) per step — at N=24 it's a few hundred kops/frame, smooth.
+      Cross-product variant integrates <code>m_x(q_y−p_y) − m_y(q_x−p_x)</code>.
+      <code>ω relax rate · dt</code> ∈ [0,1] is the fraction by which ω moves toward target each step;
+      <code>curl-fix rate · dt</code> ∈ [0,1] is the fraction of the curl mismatch we remove each step.
+      Self-pair (q=p) is excluded from the kernel.
     </div>
   </div>
 </div>
 
 <div class="row" style="margin-top: 12px">
   <div class="panel"><div class="vislabel">Mass M — hue=direction, brightness=|M|</div><canvas id="cMHue"></canvas></div>
-  <div class="panel"><div class="vislabel">Potential P — hue=direction, brightness=|P|</div><canvas id="cPHue"></canvas></div>
   <div class="panel"><div class="vislabel">|M| heatmap</div><canvas id="cMMag"></canvas></div>
-  <div class="panel"><div class="vislabel">|P| heatmap</div><canvas id="cPMag"></canvas></div>
-</div>
-
-<div class="row" style="margin-top: 12px">
   <div class="panel"><div class="vislabel">M arrows — length & thickness ∝ |M|</div><canvas id="cMArr"></canvas></div>
-  <div class="panel"><div class="vislabel">P arrows — length & thickness ∝ |P|</div><canvas id="cPArr"></canvas></div>
-  <div class="panel"><div class="vislabel">Overlay — M (red) over P (cyan)</div><canvas id="cOver"></canvas></div>
-  <div class="panel"><div class="vislabel">∇·M residual (red=+, blue=−)</div><canvas id="cDiv"></canvas></div>
+  <div class="panel"><div class="vislabel">streamlines of M</div><canvas id="cStream"></canvas></div>
 </div>
 
 <div class="row" style="margin-top: 12px">
-  <div class="panel"><div class="vislabel">scalar potential Φ (red=+, blue=−)</div><canvas id="cPhi"></canvas></div>
-  <div class="panel"><div class="vislabel">M & P alignment (cosθ; red=parallel, blue=anti)</div><canvas id="cAlign"></canvas></div>
-  <div class="panel"><div class="vislabel">streamlines of M</div><canvas id="cStream"></canvas></div>
+  <div class="panel"><div class="vislabel">ω  (red=+, blue=−)</div><canvas id="cOmega"></canvas></div>
+  <div class="panel"><div class="vislabel">ω<sub>target</sub></div><canvas id="cOmegaT"></canvas></div>
+  <div class="panel"><div class="vislabel">curl(M) — should match ω</div><canvas id="cCurl"></canvas></div>
+  <div class="panel"><div class="vislabel">∇·M residual</div><canvas id="cDiv"></canvas></div>
 </div>
 
 <script>
 'use strict';
 
-// ─── State ─────────────────────────────────────────────────────────────
-let N    = 64;
-let cell = 6;
-let M, P, phi, chi;       // fields
-let logBright = false;
-let stepCount = 0;
-let iterating = false;
-let lastTime  = performance.now();
-let frames    = 0;
-let fps       = 0;
+// ── State ────────────────────────────────────────────────────────────
+let N        = 24;
+let cell     = 10;
+let M, omega, omegaTarget, psi, chi;
+let targetMass = 0;
+let logBright  = false;
+let stepCount  = 0;
+let iterating  = false;
+let lastTime   = performance.now();
+let frames     = 0;
+let fps        = 0;
 
-const $ = id => document.getElementById(id);
+const $    = id => document.getElementById(id);
 const stat = $('status');
 
-// ─── Allocation / init ────────────────────────────────────────────────
 function alloc(n) {
-  N   = n;
-  M   = new Float32Array(2*N*N);
-  P   = new Float32Array(2*N*N);
-  phi = new Float32Array(N*N);
-  chi = new Float32Array(N*N);
+  N           = n;
+  M           = new Float32Array(2*N*N);
+  omega       = new Float32Array(N*N);
+  omegaTarget = new Float32Array(N*N);
+  psi         = new Float32Array(N*N);
+  chi         = new Float32Array(N*N);
+}
+
+function totalMass() {
+  let s = 0;
+  for (let k = 0; k < 2*N*N; k += 2) s += Math.hypot(M[k], M[k+1]);
+  return s;
+}
+
+function rescaleMass() {
+  if (!$('ctlConsv').checked) return;
+  const cur = totalMass();
+  if (cur < 1e-9 || targetMass < 1e-9) return;
+  const f = targetMass / cur;
+  for (let k = 0; k < 2*N*N; k++) M[k] *= f;
 }
 
 function randomize() {
   for (let k = 0; k < 2*N*N; k++) M[k] = (Math.random()*2 - 1);
-  P.fill(0); phi.fill(0); chi.fill(0);
-  projectDivergenceFree(60);
-  computePotential(60);
+  omega.fill(0); omegaTarget.fill(0); psi.fill(0); chi.fill(0);
+  projectDivFree(80);
+  targetMass = totalMass();
+  // start ω matching the initial curl so we don't kick the field on step 0
+  computeCurlInto(omega);
+  computeOmegaTarget(currentKernel(), parseFloat($('ctlKappa').value));
 }
 
 function zero() {
-  M.fill(0); P.fill(0); phi.fill(0); chi.fill(0);
+  M.fill(0); omega.fill(0); omegaTarget.fill(0); psi.fill(0); chi.fill(0);
+  targetMass = 0;
 }
 
 function jitter(amt) {
   for (let k = 0; k < 2*N*N; k++) M[k] += (Math.random()*2 - 1) * amt;
 }
 
-// ─── Solvers ───────────────────────────────────────────────────────────
-// Convention: idx (i,j), i=row (y), j=col (x).
-// Vector layout: F[2*(i*N+j)+0] = x-component (∂/∂j), F[...+1] = y-component (∂/∂i).
-// For periodic 5-point Laplacian consistency, use forward-diff for grad and
-// backward-diff for div, both warped on the torus.
+function currentKernel() { return $('ctlKernel').value === 'cross'; }
 
-function computePotential(iters) {
-  // ∇²Φ = |M| − mean(|M|);  P = −∇Φ
-  let total = 0;
-  const src = new Float32Array(N*N);
+// ── Operators ───────────────────────────────────────────────────────
+// curl(M) using backward differences
+function computeCurlInto(out) {
   for (let i = 0; i < N; i++) {
+    const im = (i-1+N)%N;
     for (let j = 0; j < N; j++) {
-      const k = 2*(i*N+j);
-      const m = Math.hypot(M[k], M[k+1]);
-      src[i*N+j] = m;
-      total += m;
+      const jm = (j-1+N)%N;
+      const dMydx = M[2*(i*N+j)+1] - M[2*(i*N+jm)+1];
+      const dMxdy = M[2*(i*N+j)]   - M[2*(im*N+j)];
+      out[i*N+j] = dMydx - dMxdy;
     }
   }
-  const mean = total / (N*N);
-  for (let k = 0; k < N*N; k++) src[k] -= mean;
-
-  const tmp = new Float32Array(N*N);
-  for (let it = 0; it < iters; it++) {
-    for (let i = 0; i < N; i++) {
-      const ip = (i+1) % N, im = (i-1+N) % N;
-      for (let j = 0; j < N; j++) {
-        const jp = (j+1) % N, jm = (j-1+N) % N;
-        tmp[i*N+j] = 0.25*(phi[ip*N+j] + phi[im*N+j] + phi[i*N+jp] + phi[i*N+jm] - src[i*N+j]);
-      }
-    }
-    phi.set(tmp);
-  }
-  // P = −∇Φ via centered differences (smoother for visualization)
+}
+// div(M) using backward differences (paired with forward-diff grad → 5-point Laplacian)
+function computeDivInto(out) {
   for (let i = 0; i < N; i++) {
-    const ip = (i+1) % N, im = (i-1+N) % N;
+    const im = (i-1+N)%N;
     for (let j = 0; j < N; j++) {
-      const jp = (j+1) % N, jm = (j-1+N) % N;
-      const gx = (phi[i*N+jp] - phi[i*N+jm]) * 0.5;  // ∂Φ/∂x
-      const gy = (phi[ip*N+j] - phi[im*N+j]) * 0.5;  // ∂Φ/∂y
-      const k  = 2*(i*N+j);
-      P[k]   = -gx;
-      P[k+1] = -gy;
+      const jm = (j-1+N)%N;
+      const dx = M[2*(i*N+j)]   - M[2*(i*N+jm)];
+      const dy = M[2*(i*N+j)+1] - M[2*(im*N+j)+1];
+      out[i*N+j] = dx + dy;
     }
   }
 }
 
-function projectDivergenceFree(iters) {
-  // Solve ∇²χ = ∇·M (5-point), then M -= ∇χ.
+// Project M onto divergence-free subspace: M ← M − ∇χ where ∇²χ = ∇·M.
+function projectDivFree(iters) {
   const div = new Float32Array(N*N);
-  for (let i = 0; i < N; i++) {
-    const im = (i-1+N) % N;
-    for (let j = 0; j < N; j++) {
-      const jm = (j-1+N) % N;
-      const dx = M[2*(i*N+j)]   - M[2*(i*N+jm)];      // backward ∂Mx/∂x
-      const dy = M[2*(i*N+j)+1] - M[2*(im*N+j)+1];    // backward ∂My/∂y
-      div[i*N+j] = dx + dy;
-    }
-  }
-  // Periodic compatibility: subtract mean (should be ~0 numerically)
-  let s = 0;
-  for (let k = 0; k < N*N; k++) s += div[k];
-  const mean = s / (N*N);
-  for (let k = 0; k < N*N; k++) div[k] -= mean;
-
+  computeDivInto(div);
+  let s = 0; for (let k = 0; k < N*N; k++) s += div[k];
+  const m = s / (N*N);
+  for (let k = 0; k < N*N; k++) div[k] -= m;       // periodic compatibility
   const tmp = new Float32Array(N*N);
   for (let it = 0; it < iters; it++) {
     for (let i = 0; i < N; i++) {
-      const ip = (i+1) % N, im = (i-1+N) % N;
+      const ip = (i+1)%N, im = (i-1+N)%N;
       for (let j = 0; j < N; j++) {
-        const jp = (j+1) % N, jm = (j-1+N) % N;
+        const jp = (j+1)%N, jm = (j-1+N)%N;
         tmp[i*N+j] = 0.25*(chi[ip*N+j] + chi[im*N+j] + chi[i*N+jp] + chi[i*N+jm] - div[i*N+j]);
       }
     }
     chi.set(tmp);
   }
-  // M -= ∇χ (forward differences, paired with the backward div above gives the
-  // standard 5-point Laplacian — no checkerboard mode).
   for (let i = 0; i < N; i++) {
-    const ip = (i+1) % N;
+    const ip = (i+1)%N;
     for (let j = 0; j < N; j++) {
-      const jp = (j+1) % N;
+      const jp = (j+1)%N;
       const gx = chi[i*N+jp] - chi[i*N+j];
       const gy = chi[ip*N+j] - chi[i*N+j];
-      const k  = 2*(i*N+j);
+      const k = 2*(i*N+j);
       M[k]   -= gx;
       M[k+1] -= gy;
     }
   }
 }
 
-// ─── Step ─────────────────────────────────────────────────────────────
-function step(dt, bendK, paraK, dampK, divIt, potIt) {
-  computePotential(potIt);
-
-  for (let k = 0; k < 2*N*N; k += 2) {
-    const mx = M[k],   my = M[k+1];
-    const px = P[k],   py = P[k+1];
-    const m2 = mx*mx + my*my;
-    let perpx, perpy, parax, paray;
-    if (m2 < 1e-12) {
-      perpx = px; perpy = py;
-      parax = 0;  paray = 0;
-    } else {
-      const dotN = (px*mx + py*my) / m2;  // P·M / |M|^2 — coefficient of M̂ in P
-      parax = dotN * mx;
-      paray = dotN * my;
-      perpx = px - parax;
-      perpy = py - paray;
+// Push curl(M) toward ω: solve ∇²ψ = −(ω − curl(M)), then M ← M + rate · ∇⊥ψ.
+function applyCurlCorrection(rate, iters) {
+  const delta = new Float32Array(N*N);
+  computeCurlInto(delta);
+  for (let k = 0; k < N*N; k++) delta[k] = omega[k] - delta[k];
+  let s = 0; for (let k = 0; k < N*N; k++) s += delta[k];
+  const m = s / (N*N);
+  for (let k = 0; k < N*N; k++) delta[k] -= m;
+  // ∇²ψ = −delta  ⇒  ψ[i,j] = (Σ neighbours + delta[i,j]) / 4
+  const tmp = new Float32Array(N*N);
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < N; i++) {
+      const ip = (i+1)%N, im = (i-1+N)%N;
+      for (let j = 0; j < N; j++) {
+        const jp = (j+1)%N, jm = (j-1+N)%N;
+        tmp[i*N+j] = 0.25*(psi[ip*N+j] + psi[im*N+j] + psi[i*N+jp] + psi[i*N+jm] + delta[i*N+j]);
+      }
     }
-    M[k]   = mx + dt*(bendK*perpx + paraK*parax) - dampK*mx;
-    M[k+1] = my + dt*(bendK*perpy + paraK*paray) - dampK*my;
+    psi.set(tmp);
   }
-  projectDivergenceFree(divIt);
+  // ∇⊥ψ = (∂ψ/∂y, −∂ψ/∂x) using forward differences.
+  for (let i = 0; i < N; i++) {
+    const ip = (i+1)%N;
+    for (let j = 0; j < N; j++) {
+      const jp = (j+1)%N;
+      const dpsidy = psi[ip*N+j] - psi[i*N+j];
+      const dpsidx = psi[i*N+jp] - psi[i*N+j];
+      const k = 2*(i*N+j);
+      M[k]   += rate * dpsidy;
+      M[k+1] -= rate * dpsidx;
+    }
+  }
 }
 
-// ─── Drawing helpers ──────────────────────────────────────────────────
+// ω_target(q) = κ · Σ_p kernel(m(p), q−p) / |q−p|², minimum image, q≠p.
+function computeOmegaTarget(useCross, kappa) {
+  const halfN = N >> 1;
+  for (let qi = 0; qi < N; qi++) {
+    for (let qj = 0; qj < N; qj++) {
+      let sum = 0;
+      for (let pi = 0; pi < N; pi++) {
+        let dpi = qi - pi;
+        if (dpi >  halfN) dpi -= N; else if (dpi < -halfN) dpi += N;
+        for (let pj = 0; pj < N; pj++) {
+          let dpj = qj - pj;
+          if (dpj >  halfN) dpj -= N; else if (dpj < -halfN) dpj += N;
+          const d2 = dpi*dpi + dpj*dpj;
+          if (d2 < 0.5) continue;
+          const k  = 2*(pi*N + pj);
+          const Mx = M[k], My = M[k+1];
+          // v = q − p has v.x = dpj (column), v.y = dpi (row).
+          // m·v   = Mx·dpj + My·dpi
+          // m×v_z = Mx·dpi − My·dpj
+          const inv = 1 / d2;
+          sum += useCross ? (Mx*dpi - My*dpj) * inv
+                          : (Mx*dpj + My*dpi) * inv;
+        }
+      }
+      omegaTarget[qi*N + qj] = kappa * sum;
+    }
+  }
+}
+
+// ── Step ────────────────────────────────────────────────────────────
+function step(dt, kappa, omegaR, curlR, dampK, divIt, psiIt, useCross) {
+  computeOmegaTarget(useCross, kappa);
+  // ω relaxes toward ω_target
+  const r = Math.min(1, omegaR * dt);
+  for (let k = 0; k < N*N; k++) omega[k] += r * (omegaTarget[k] - omega[k]);
+  // optional uniform damping of M (shrinks magnitudes pre-rescale)
+  if (dampK > 0) {
+    const f = 1 - dampK;
+    for (let k = 0; k < 2*N*N; k++) M[k] *= f;
+  }
+  // push curl(M) toward ω
+  applyCurlCorrection(Math.min(1, curlR * dt), psiIt);
+  // re-project sourceless
+  projectDivFree(divIt);
+  // conserve total mass
+  rescaleMass();
+}
+
+// ── Drawing ─────────────────────────────────────────────────────────
 function hsv2rgb(h, s, v) {
-  // h 0..1, s 0..1, v 0..1 → r,g,b in 0..255
-  const i = Math.floor(h*6);
-  const f = h*6 - i;
-  const p = v*(1 - s);
-  const q = v*(1 - f*s);
-  const t = v*(1 - (1-f)*s);
+  const i = Math.floor(h*6); const f = h*6 - i;
+  const p = v*(1 - s); const q = v*(1 - f*s); const t = v*(1 - (1-f)*s);
   let r, g, b;
   switch (i % 6) {
     case 0: r=v; g=t; b=p; break;
@@ -268,26 +318,30 @@ function maxMag(F) {
   }
   return Math.sqrt(mx);
 }
+function maxAbs(S) {
+  let mx = 1e-9;
+  for (let k = 0; k < N*N; k++) {
+    const v = Math.abs(S[k]);
+    if (v > mx) mx = v;
+  }
+  return mx;
+}
 function nrm(v, mx) {
   const r = v / Math.max(mx, 1e-9);
   if (logBright) return Math.log1p(9*r) / Math.log(10);
   return Math.min(1, r);
 }
 function setupSmall(canvas) {
-  canvas.width = N;
-  canvas.height = N;
+  canvas.width = N; canvas.height = N;
   canvas.style.width  = (N*cell) + 'px';
   canvas.style.height = (N*cell) + 'px';
 }
 function setupBig(canvas) {
   const W = N*cell;
-  canvas.width = W;
-  canvas.height = W;
-  canvas.style.width  = W + 'px';
-  canvas.style.height = W + 'px';
+  canvas.width = W; canvas.height = W;
+  canvas.style.width = W + 'px'; canvas.style.height = W + 'px';
 }
 
-// ─── Field renderers ──────────────────────────────────────────────────
 function drawHueField(canvas, F) {
   setupSmall(canvas);
   const ctx = canvas.getContext('2d');
@@ -299,8 +353,8 @@ function drawHueField(canvas, F) {
       const fx = F[k], fy = F[k+1];
       const mag = Math.hypot(fx, fy);
       const ang = Math.atan2(fy, fx);
-      const h   = (ang/(2*Math.PI) + 1) % 1;
-      const v   = nrm(mag, mx);
+      const h = (ang/(2*Math.PI) + 1) % 1;
+      const v = nrm(mag, mx);
       const [r,g,b] = hsv2rgb(h, 0.9, v);
       const o = 4*(i*N+j);
       img.data[o]=r; img.data[o+1]=g; img.data[o+2]=b; img.data[o+3]=255;
@@ -309,7 +363,7 @@ function drawHueField(canvas, F) {
   ctx.putImageData(img, 0, 0);
 }
 
-function drawMagField(canvas, F, hueShift = 0.6) {
+function drawMagField(canvas, F) {
   setupSmall(canvas);
   const ctx = canvas.getContext('2d');
   const img = ctx.createImageData(N, N);
@@ -319,13 +373,31 @@ function drawMagField(canvas, F, hueShift = 0.6) {
       const k = 2*(i*N+j);
       const mag = Math.hypot(F[k], F[k+1]);
       const v = nrm(mag, mx);
-      // viridis-ish: dark indigo → magenta → yellow
-      const [r,g,b] = hsv2rgb(hueShift - 0.4*v, 0.85 - 0.4*v, 0.1 + 0.9*v);
+      const [r,g,b] = hsv2rgb(0.62 - 0.45*v, 0.85 - 0.35*v, 0.08 + 0.92*v);
       const o = 4*(i*N+j);
       img.data[o]=r; img.data[o+1]=g; img.data[o+2]=b; img.data[o+3]=255;
     }
   }
   ctx.putImageData(img, 0, 0);
+}
+
+function drawScalarSigned(canvas, S) {
+  setupSmall(canvas);
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  const mx = maxAbs(S);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const v = S[i*N+j] / mx;
+      const a = Math.abs(v);
+      const o = 4*(i*N+j);
+      if (v > 0) { img.data[o]=255*a; img.data[o+1]=110*a; img.data[o+2]=70*a;  }
+      else       { img.data[o]=70*a;  img.data[o+1]=140*a; img.data[o+2]=255*a; }
+      img.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return mx;
 }
 
 function drawArrowField(canvas, F, color, arrowScale, stride) {
@@ -344,9 +416,9 @@ function drawArrowField(canvas, F, color, arrowScale, stride) {
       const cx = j*cell + cell/2;
       const cy = i*cell + cell/2;
       const norm = nrm(mag, mx);
-      const len  = norm * cell * stride * arrowScale;
-      const dx   = (fx / mag) * len;
-      const dy   = (fy / mag) * len;
+      const len = norm * cell * stride * arrowScale;
+      const dx = (fx / mag) * len;
+      const dy = (fy / mag) * len;
       ctx.lineWidth = Math.max(0.5, norm * 1.6 * stride);
       ctx.beginPath();
       ctx.moveTo(cx - 0.3*dx, cy - 0.3*dy);
@@ -356,117 +428,6 @@ function drawArrowField(canvas, F, color, arrowScale, stride) {
   }
 }
 
-function drawOverlay(canvas, arrowScale, stride) {
-  setupBig(canvas);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const drawSet = (F, baseColor, perAlpha, widthMul) => {
-    const mx = maxMag(F);
-    for (let i = 0; i < N; i += stride) {
-      for (let j = 0; j < N; j += stride) {
-        const k = 2*(i*N+j);
-        const fx = F[k], fy = F[k+1];
-        const mag = Math.hypot(fx, fy);
-        if (mag < 1e-9) continue;
-        const cx = j*cell + cell/2;
-        const cy = i*cell + cell/2;
-        const norm = nrm(mag, mx);
-        const len  = norm * cell * stride * arrowScale;
-        const dx   = (fx / mag) * len;
-        const dy   = (fy / mag) * len;
-        ctx.strokeStyle = baseColor.replace('A', (perAlpha(norm)).toFixed(2));
-        ctx.lineWidth   = Math.max(0.5, norm * widthMul * stride);
-        ctx.beginPath();
-        ctx.moveTo(cx - 0.3*dx, cy - 0.3*dy);
-        ctx.lineTo(cx + 0.7*dx, cy + 0.7*dy);
-        ctx.stroke();
-      }
-    }
-  };
-  drawSet(P, 'rgba(80,200,255,A)', n => 0.35 + 0.45*n, 1.1);
-  drawSet(M, 'rgba(255,90,90,A)',  n => 0.55 + 0.45*n, 1.6);
-}
-
-function drawDiv(canvas) {
-  setupSmall(canvas);
-  const ctx = canvas.getContext('2d');
-  const div = new Float32Array(N*N);
-  let mx = 1e-9;
-  for (let i = 0; i < N; i++) {
-    const im = (i-1+N) % N;
-    for (let j = 0; j < N; j++) {
-      const jm = (j-1+N) % N;
-      const dx = M[2*(i*N+j)]   - M[2*(i*N+jm)];
-      const dy = M[2*(i*N+j)+1] - M[2*(im*N+j)+1];
-      const d  = dx + dy;
-      div[i*N+j] = d;
-      if (Math.abs(d) > mx) mx = Math.abs(d);
-    }
-  }
-  const img = ctx.createImageData(N, N);
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
-      const d = div[i*N+j] / mx;
-      const o = 4*(i*N+j);
-      const a = Math.abs(d);
-      if (d > 0) { img.data[o]=255*a; img.data[o+1]=80*a;  img.data[o+2]=80*a;  }
-      else       { img.data[o]=80*a;  img.data[o+1]=120*a; img.data[o+2]=255*a; }
-      img.data[o+3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return mx;
-}
-
-function drawPhi(canvas) {
-  setupSmall(canvas);
-  const ctx = canvas.getContext('2d');
-  // center phi around 0 by subtracting its mean
-  let s = 0;
-  for (let k = 0; k < N*N; k++) s += phi[k];
-  const m = s / (N*N);
-  let mx = 1e-9;
-  for (let k = 0; k < N*N; k++) {
-    const v = Math.abs(phi[k] - m);
-    if (v > mx) mx = v;
-  }
-  const img = ctx.createImageData(N, N);
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
-      const v = (phi[i*N+j] - m) / mx;
-      const o = 4*(i*N+j);
-      const a = Math.abs(v);
-      if (v > 0) { img.data[o]=255*a; img.data[o+1]=120*a; img.data[o+2]=60*a;  }
-      else       { img.data[o]=60*a;  img.data[o+1]=140*a; img.data[o+2]=255*a; }
-      img.data[o+3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-}
-
-function drawAlign(canvas) {
-  setupSmall(canvas);
-  const ctx = canvas.getContext('2d');
-  const img = ctx.createImageData(N, N);
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
-      const k = 2*(i*N+j);
-      const mx_ = M[k], my_ = M[k+1];
-      const px_ = P[k], py_ = P[k+1];
-      const denom = Math.hypot(mx_, my_) * Math.hypot(px_, py_);
-      const cosT  = denom < 1e-9 ? 0 : (mx_*px_ + my_*py_) / denom;
-      const o = 4*(i*N+j);
-      const a = Math.abs(cosT);
-      if (cosT > 0) { img.data[o]=255*a; img.data[o+1]=120*a; img.data[o+2]=60*a;  }
-      else          { img.data[o]=60*a;  img.data[o+1]=140*a; img.data[o+2]=255*a; }
-      img.data[o+3] = 255;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-}
-
-// Bilinear sampling of M with periodic wrap
 function sampleM(x, y) {
   const fx = ((x % N) + N) % N;
   const fy = ((y % N) + N) % N;
@@ -487,36 +448,34 @@ function drawStreamlines(canvas) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   const mx = maxMag(M);
   if (mx < 1e-9) return;
-  const seedStride = Math.max(1, Math.floor(N / 32));
-  const stepSize   = 0.5;        // grid units per step
-  const nSteps     = Math.floor(N * 1.2);
-  // scaling from sampled vector to a grid-unit step
-  const scale = stepSize / mx;
+  const seedStride = Math.max(1, Math.floor(N / 20));
+  const stepSize   = 0.5;
+  const nSteps     = Math.floor(N * 1.5);
+  const scale      = stepSize / mx;
   for (let si = 0; si < N; si += seedStride) {
     for (let sj = 0; sj < N; sj += seedStride) {
       let x = sj + 0.5, y = si + 0.5;
       ctx.beginPath();
       ctx.moveTo(x*cell, y*cell);
-      let traceMag = 0;
+      let traceMag = 0, n = 0;
       for (let s = 0; s < nSteps; s++) {
         const [vx, vy] = sampleM(x, y);
         const m = Math.hypot(vx, vy);
         if (m < 1e-6) break;
         x += vx * scale;
         y += vy * scale;
-        // wrap (canvas line will wrap with moveTo on jump)
         if (x < 0 || x >= N || y < 0 || y >= N) {
           x = ((x % N) + N) % N;
           y = ((y % N) + N) % N;
           ctx.stroke();
           ctx.beginPath();
           ctx.moveTo(x*cell, y*cell);
-          continue;
+        } else {
+          ctx.lineTo(x*cell, y*cell);
         }
-        ctx.lineTo(x*cell, y*cell);
-        traceMag += m;
+        traceMag += m; n++;
       }
-      const avgM = nrm(traceMag / nSteps, mx);
+      const avgM = nrm(n > 0 ? traceMag / n : 0, mx);
       ctx.strokeStyle = `rgba(255,${180+(60*avgM)|0},${60+(120*avgM)|0},${0.3 + 0.6*avgM})`;
       ctx.lineWidth   = 0.6 + 1.2*avgM;
       ctx.stroke();
@@ -524,77 +483,81 @@ function drawStreamlines(canvas) {
   }
 }
 
-// ─── Master render ────────────────────────────────────────────────────
+// ── Master render ──────────────────────────────────────────────────
 function render() {
   const arrowScale = parseFloat($('ctlArrow').value);
   const stride     = parseInt($('ctlStride').value);
 
   drawHueField($('cMHue'), M);
-  drawHueField($('cPHue'), P);
-  drawMagField($('cMMag'), M, 0.95);   // reddish
-  drawMagField($('cPMag'), P, 0.55);   // bluish
+  drawMagField($('cMMag'), M);
   drawArrowField($('cMArr'), M, '#ff7070', arrowScale, stride);
-  drawArrowField($('cPArr'), P, '#70c8ff', arrowScale, stride);
-  drawOverlay($('cOver'), arrowScale, stride);
-  const maxDiv = drawDiv($('cDiv'));
-  drawPhi($('cPhi'));
-  drawAlign($('cAlign'));
   drawStreamlines($('cStream'));
 
-  let totalM = 0, totalP = 0;
-  for (let k = 0; k < 2*N*N; k += 2) {
-    totalM += Math.hypot(M[k], M[k+1]);
-    totalP += Math.hypot(P[k], P[k+1]);
-  }
+  drawScalarSigned($('cOmega'),  omega);
+  drawScalarSigned($('cOmegaT'), omegaTarget);
+  const curl = new Float32Array(N*N);
+  computeCurlInto(curl);
+  drawScalarSigned($('cCurl'), curl);
+  const div = new Float32Array(N*N);
+  computeDivInto(div);
+  const maxDiv = drawScalarSigned($('cDiv'), div);
+
+  let totM = 0, sumW = 0, sumWT = 0;
+  for (let k = 0; k < 2*N*N; k += 2) totM += Math.hypot(M[k], M[k+1]);
+  for (let k = 0; k < N*N; k++)     { sumW += Math.abs(omega[k]); sumWT += Math.abs(omegaTarget[k]); }
+  let curlMatch = 0;
+  for (let k = 0; k < N*N; k++) curlMatch += Math.abs(omega[k] - curl[k]);
+  curlMatch /= (N*N);
+
   stat.textContent =
-    `step=${stepCount}  N=${N}  cell=${cell}px  ` +
-    `Σ|M|=${totalM.toFixed(2)}  Σ|P|=${totalP.toFixed(2)}  ` +
+    `step=${stepCount}  N=${N}×${N}  Σ|M|=${totM.toFixed(2)} (target ${targetMass.toFixed(2)})  ` +
+    `Σ|ω|=${sumW.toFixed(2)}  Σ|ω_target|=${sumWT.toFixed(2)}  ` +
+    `mean|ω−curl(M)|=${curlMatch.toExponential(2)}  ` +
     `max|∇·M|=${maxDiv.toExponential(2)}  ` +
     (iterating ? `${fps.toFixed(0)} fps` : 'idle');
 }
 
-// ─── Loop ─────────────────────────────────────────────────────────────
+// ── Loop ───────────────────────────────────────────────────────────
 function tick() {
   if (!iterating) return;
-  const dt    = parseFloat($('ctlDt').value);
-  const bend  = parseFloat($('ctlBend').value);
-  const para  = parseFloat($('ctlPara').value);
-  const damp  = parseFloat($('ctlDamp').value);
-  const divIt = parseInt($('ctlDivIt').value);
-  const potIt = parseInt($('ctlPotIt').value);
-  step(dt, bend, para, damp, divIt, potIt);
+  const dt       = parseFloat($('ctlDt').value);
+  const kappa    = parseFloat($('ctlKappa').value);
+  const omegaR   = parseFloat($('ctlOmegaR').value);
+  const curlR    = parseFloat($('ctlCurlR').value);
+  const damp     = parseFloat($('ctlDamp').value);
+  const divIt    = parseInt($('ctlDivIt').value);
+  const psiIt    = parseInt($('ctlPsiIt').value);
+  const useCross = currentKernel();
+  step(dt, kappa, omegaR, curlR, damp, divIt, psiIt, useCross);
   stepCount++;
   frames++;
   const now = performance.now();
   if (now - lastTime > 500) {
-    fps       = frames * 1000 / (now - lastTime);
-    lastTime  = now;
-    frames    = 0;
+    fps      = frames * 1000 / (now - lastTime);
+    lastTime = now; frames = 0;
   }
   render();
   requestAnimationFrame(tick);
 }
 
-// ─── UI hookup ────────────────────────────────────────────────────────
-function bindLabel(id, lblId, fmt = v => v) {
-  const el  = $(id);
-  const lbl = $(lblId);
-  const upd = () => { lbl.textContent = fmt(el.value); };
-  el.addEventListener('input', upd);
-  upd();
+// ── UI hookup ──────────────────────────────────────────────────────
+function bindLabel(id, lblId) {
+  const el  = $(id), lbl = $(lblId);
+  const upd = () => { lbl.textContent = el.value; };
+  el.addEventListener('input', upd); upd();
 }
-
-bindLabel('ctlN',      'lblN');
-bindLabel('ctlCell',   'lblCell');
-bindLabel('ctlDt',     'lblDt');
-bindLabel('ctlBend',   'lblBend');
-bindLabel('ctlPara',   'lblPara');
-bindLabel('ctlJitter', 'lblJitter');
-bindLabel('ctlDamp',   'lblDamp');
-bindLabel('ctlDivIt',  'lblDivIt');
-bindLabel('ctlPotIt',  'lblPotIt');
-bindLabel('ctlArrow',  'lblArrow');
-bindLabel('ctlStride', 'lblStride');
+bindLabel('ctlN','lblN');
+bindLabel('ctlCell','lblCell');
+bindLabel('ctlDt','lblDt');
+bindLabel('ctlKappa','lblKappa');
+bindLabel('ctlOmegaR','lblOmegaR');
+bindLabel('ctlCurlR','lblCurlR');
+bindLabel('ctlJitter','lblJitter');
+bindLabel('ctlDamp','lblDamp');
+bindLabel('ctlDivIt','lblDivIt');
+bindLabel('ctlPsiIt','lblPsiIt');
+bindLabel('ctlArrow','lblArrow');
+bindLabel('ctlStride','lblStride');
 
 $('ctlN').addEventListener('change', e => {
   alloc(parseInt(e.target.value));
@@ -610,30 +573,25 @@ $('ctlLog').addEventListener('change', e => {
   logBright = e.target.checked;
   render();
 });
-$('btnRand').addEventListener('click', () => {
-  randomize();
-  stepCount = 0;
-  render();
-});
-$('btnZero').addEventListener('click', () => {
-  zero();
-  stepCount = 0;
-  render();
-});
+$('btnRand').addEventListener('click', () => { randomize(); stepCount = 0; render(); });
+$('btnZero').addEventListener('click', () => { zero(); stepCount = 0; render(); });
 $('btnJitter').addEventListener('click', () => {
   jitter(parseFloat($('ctlJitter').value));
-  projectDivergenceFree(parseInt($('ctlDivIt').value));
-  computePotential(parseInt($('ctlPotIt').value));
+  projectDivFree(parseInt($('ctlDivIt').value));
+  rescaleMass();
+  computeOmegaTarget(currentKernel(), parseFloat($('ctlKappa').value));
   render();
 });
 $('btnStep').addEventListener('click', () => {
-  const dt    = parseFloat($('ctlDt').value);
-  const bend  = parseFloat($('ctlBend').value);
-  const para  = parseFloat($('ctlPara').value);
-  const damp  = parseFloat($('ctlDamp').value);
-  const divIt = parseInt($('ctlDivIt').value);
-  const potIt = parseInt($('ctlPotIt').value);
-  step(dt, bend, para, damp, divIt, potIt);
+  const dt       = parseFloat($('ctlDt').value);
+  const kappa    = parseFloat($('ctlKappa').value);
+  const omegaR   = parseFloat($('ctlOmegaR').value);
+  const curlR    = parseFloat($('ctlCurlR').value);
+  const damp     = parseFloat($('ctlDamp').value);
+  const divIt    = parseInt($('ctlDivIt').value);
+  const psiIt    = parseInt($('ctlPsiIt').value);
+  const useCross = currentKernel();
+  step(dt, kappa, omegaR, curlR, damp, divIt, psiIt, useCross);
   stepCount++;
   render();
 });
@@ -642,14 +600,10 @@ btnIter.addEventListener('click', () => {
   iterating = !iterating;
   btnIter.classList.toggle('active', iterating);
   btnIter.textContent = iterating ? 'Stop' : 'Iterate';
-  if (iterating) {
-    lastTime = performance.now();
-    frames   = 0;
-    requestAnimationFrame(tick);
-  }
+  if (iterating) { lastTime = performance.now(); frames = 0; requestAnimationFrame(tick); }
 });
 
-// ─── Init ─────────────────────────────────────────────────────────────
+// ── Init ───────────────────────────────────────────────────────────
 cell = parseInt($('ctlCell').value);
 alloc(parseInt($('ctlN').value));
 randomize();
