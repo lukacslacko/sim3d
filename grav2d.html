@@ -53,10 +53,11 @@ you can flip the orientation of either kernel.
       <button id="btnIter">Iterate</button>
     </div>
     <div class="controls">
-      <label>N (grid)</label>      <input id="ctlN"      type="range" min="12"  max="48"   step="2"     value="24"><span class="val" id="lblN"></span>
-      <label>cell px</label>       <input id="ctlCell"   type="range" min="4"   max="22"   step="1"     value="10"><span class="val" id="lblCell"></span>
+      <label>N (grid)</label>      <input id="ctlN"      type="range" min="12"  max="128"  step="2"     value="32"><span class="val" id="lblN"></span>
+      <label>cell px</label>       <input id="ctlCell"   type="range" min="2"   max="22"   step="1"     value="8"><span class="val" id="lblCell"></span>
       <label>kernel</label>        <select id="ctlKernel"><option value="dot">dot(m, q−p) / |q−p|²</option><option value="cross">cross(m, q−p) / |q−p|²</option></select><span class="val">&nbsp;</span>
       <label>κ (kernel coef)</label><input id="ctlKappa" type="range" min="-2"  max="2"    step="0.005" value="0.10"><span class="val" id="lblKappa"></span>
+      <label>cutoff (·N)</label>   <input id="ctlCutoff" type="range" min="0.05" max="0.5" step="0.01"  value="0.25"><span class="val" id="lblCutoff"></span>
       <label>dt</label>            <input id="ctlDt"     type="range" min="0"   max="1"    step="0.005" value="0.20"><span class="val" id="lblDt"></span>
       <label>ω relax rate</label>  <input id="ctlOmegaR" type="range" min="0"   max="3"    step="0.01"  value="1.00"><span class="val" id="lblOmegaR"></span>
       <label>curl-fix rate</label> <input id="ctlCurlR"  type="range" min="0"   max="2"    step="0.01"  value="1.00"><span class="val" id="lblCurlR"></span>
@@ -71,11 +72,13 @@ you can flip the orientation of either kernel.
     </div>
     <div id="status"></div>
     <div class="legend">
-      Kernel sum is O(N⁴) per step — at N=24 it's a few hundred kops/frame, smooth.
+      Kernel is summed only over <code>p</code> within radius <code>R = cutoff · N</code> of <code>q</code>
+      (minimum image), with a smooth cubic-smoothstep window <code>w(r) = 1 − 3t² + 2t³</code>,
+      <code>t = r/R</code>, that goes from 1 at the centre to 0 at <code>r = R</code> with zero
+      derivative at both ends. Self-pair (q=p) is excluded.
       Cross-product variant integrates <code>m_x(q_y−p_y) − m_y(q_x−p_x)</code>.
-      <code>ω relax rate · dt</code> ∈ [0,1] is the fraction by which ω moves toward target each step;
-      <code>curl-fix rate · dt</code> ∈ [0,1] is the fraction of the curl mismatch we remove each step.
-      Self-pair (q=p) is excluded from the kernel.
+      Cost per step is <code>O(N²·R²)</code> — at N=128, cutoff 0.25 it's ~52 Mops, slow; lower N
+      or smaller cutoff for smoother animation.
     </div>
   </div>
 </div>
@@ -247,31 +250,66 @@ function applyCurlCorrection(rate, iters) {
   }
 }
 
-// ω_target(q) = κ · Σ_p kernel(m(p), q−p) / |q−p|², minimum image, q≠p.
+// Precomputed kernel offsets within cutoff disk, smooth-windowed.
+let kerDi = null, kerDj = null, kerWx = null, kerWy = null;
+let kerN  = -1, kerCutoff = -1;
+
+function rebuildKernel() {
+  const cutoffFrac = parseFloat($('ctlCutoff').value);
+  if (kerN === N && kerCutoff === cutoffFrac) return;
+  kerN = N; kerCutoff = cutoffFrac;
+  const R  = N * cutoffFrac;
+  const Ri = Math.ceil(R);
+  const Di = [], Dj = [], Wx = [], Wy = [];
+  for (let di = -Ri; di <= Ri; di++) {
+    for (let dj = -Ri; dj <= Ri; dj++) {
+      if (di === 0 && dj === 0) continue;
+      const r2 = di*di + dj*dj;
+      const r  = Math.sqrt(r2);
+      if (r >= R) continue;
+      const t = r / R;
+      const w = 1 - 3*t*t + 2*t*t*t;     // cubic smoothstep, 1 → 0 over [0,R]
+      Di.push(di); Dj.push(dj);
+      // Wx, Wy chosen so dot contrib = Mx·Wx + My·Wy and cross = Mx·Wy − My·Wx.
+      Wx.push(dj * w / r2);
+      Wy.push(di * w / r2);
+    }
+  }
+  kerDi = new Int32Array(Di);
+  kerDj = new Int32Array(Dj);
+  kerWx = new Float32Array(Wx);
+  kerWy = new Float32Array(Wy);
+}
+
+// ω_target(q) = κ · Σ_{p ∈ disk(q,R)} kernel(m(p), q−p) · w(|q−p|/R) / |q−p|².
 function computeOmegaTarget(useCross, kappa) {
-  const halfN = N >> 1;
-  for (let qi = 0; qi < N; qi++) {
-    for (let qj = 0; qj < N; qj++) {
-      let sum = 0;
-      for (let pi = 0; pi < N; pi++) {
-        let dpi = qi - pi;
-        if (dpi >  halfN) dpi -= N; else if (dpi < -halfN) dpi += N;
-        for (let pj = 0; pj < N; pj++) {
-          let dpj = qj - pj;
-          if (dpj >  halfN) dpj -= N; else if (dpj < -halfN) dpj += N;
-          const d2 = dpi*dpi + dpj*dpj;
-          if (d2 < 0.5) continue;
+  rebuildKernel();
+  const nOffs = kerDi.length;
+  if (useCross) {
+    for (let qi = 0; qi < N; qi++) {
+      for (let qj = 0; qj < N; qj++) {
+        let sum = 0;
+        for (let o = 0; o < nOffs; o++) {
+          const pi = (qi - kerDi[o] + N) % N;
+          const pj = (qj - kerDj[o] + N) % N;
           const k  = 2*(pi*N + pj);
-          const Mx = M[k], My = M[k+1];
-          // v = q − p has v.x = dpj (column), v.y = dpi (row).
-          // m·v   = Mx·dpj + My·dpi
-          // m×v_z = Mx·dpi − My·dpj
-          const inv = 1 / d2;
-          sum += useCross ? (Mx*dpi - My*dpj) * inv
-                          : (Mx*dpj + My*dpi) * inv;
+          sum += M[k]*kerWy[o] - M[k+1]*kerWx[o];
         }
+        omegaTarget[qi*N + qj] = kappa * sum;
       }
-      omegaTarget[qi*N + qj] = kappa * sum;
+    }
+  } else {
+    for (let qi = 0; qi < N; qi++) {
+      for (let qj = 0; qj < N; qj++) {
+        let sum = 0;
+        for (let o = 0; o < nOffs; o++) {
+          const pi = (qi - kerDi[o] + N) % N;
+          const pj = (qj - kerDj[o] + N) % N;
+          const k  = 2*(pi*N + pj);
+          sum += M[k]*kerWx[o] + M[k+1]*kerWy[o];
+        }
+        omegaTarget[qi*N + qj] = kappa * sum;
+      }
     }
   }
 }
@@ -550,6 +588,7 @@ bindLabel('ctlN','lblN');
 bindLabel('ctlCell','lblCell');
 bindLabel('ctlDt','lblDt');
 bindLabel('ctlKappa','lblKappa');
+bindLabel('ctlCutoff','lblCutoff');
 bindLabel('ctlOmegaR','lblOmegaR');
 bindLabel('ctlCurlR','lblCurlR');
 bindLabel('ctlJitter','lblJitter');
@@ -558,6 +597,16 @@ bindLabel('ctlDivIt','lblDivIt');
 bindLabel('ctlPsiIt','lblPsiIt');
 bindLabel('ctlArrow','lblArrow');
 bindLabel('ctlStride','lblStride');
+
+// When the kernel shape changes, rebuild on next compute and refresh the panel.
+$('ctlCutoff').addEventListener('change', () => {
+  computeOmegaTarget(currentKernel(), parseFloat($('ctlKappa').value));
+  render();
+});
+$('ctlKernel').addEventListener('change', () => {
+  computeOmegaTarget(currentKernel(), parseFloat($('ctlKappa').value));
+  render();
+});
 
 $('ctlN').addEventListener('change', e => {
   alloc(parseInt(e.target.value));
