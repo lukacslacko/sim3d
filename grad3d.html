@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>3D gravity — sourceless mass-flow with prescribed curl</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0a0a10; color: #e8e8ee; margin: 0; padding: 12px; }
+  h1 { font-size: 16px; margin: 0 0 6px 0; color: #ccd; }
+  p.lead { font-size: 11px; color: #889; max-width: 920px; line-height: 1.45; margin: 0 0 10px 0; }
+  p.lead code { color: #cdc; }
+  button { padding: 4px 10px; background: #222; color: #eee; border: 1px solid #555; cursor: pointer; font-family: inherit; font-size: 12px; }
+  button.active { background: #2a4a6a; border-color: #69a; }
+  button:hover { background: #2c2c34; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+  .panel { background: #14141c; padding: 8px; border-radius: 4px; border: 1px solid #222; }
+  canvas { background: #000; image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
+  canvas.smooth { image-rendering: auto; }
+  .controls { display: grid; grid-template-columns: auto 1fr 64px; gap: 4px 8px; align-items: center; width: 380px; }
+  .controls input[type=range] { width: 100%; }
+  .controls input[type=checkbox], .controls select { justify-self: start; }
+  .controls select { background: #222; color: #eee; border: 1px solid #555; font-family: inherit; font-size: 11px; }
+  .controls label { white-space: nowrap; font-size: 11px; }
+  .controls .val { font-size: 11px; color: #aac; text-align: right; font-variant-numeric: tabular-nums; }
+  .vislabel { font-size: 11px; color: #aac; margin-bottom: 4px; }
+  #status { font-size: 11px; color: #aac; margin-top: 8px; line-height: 1.5; max-width: 380px; font-variant-numeric: tabular-nums; }
+  .legend { font-size: 10px; color: #889; max-width: 380px; line-height: 1.4; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>3D gravity — sourceless mass-flow with prescribed curl</h1>
+<p class="lead">
+<b>M</b> is a 3D mass-flow field on a periodic <code>N×N×N</code> torus, kept sourceless (<code>∇·M = 0</code>);
+<b>ω</b> is now a <i>vector</i> curl field and we want <code>curl M = ω</code>. Each step:
+(1) ω<sub>target</sub>(q) = κ · Σ<sub>p∈disk(q,R)</sub> [m(p) × (q−p)] · w(|q−p|/R) / |q−p|²
+where <code>w</code> is a cubic-smoothstep window with cutoff <code>R = cutoff·N</code>;
+(2) ω relaxes toward ω<sub>target</sub>;
+(3) curl(M) is pushed toward ω componentwise via vector potential —
+solve <code>−∇²A = ω − curl(M)</code> by Jacobi, then <code>M ← M + rate · ∇×A</code>;
+(4) Helmholtz-project M to be div-free;
+(5) rescale M so Σ|M| matches its Randomize value.
+The streamline view rotates with yaw/pitch sliders. Slice panels show one orthogonal slice
+(axis & index selectable) of various derived fields.
+</p>
+
+<div class="row">
+  <div class="panel">
+    <div class="row" style="margin-bottom: 8px">
+      <button id="btnRand">Randomize</button>
+      <button id="btnZero">Zero</button>
+      <button id="btnJitter">Jitter</button>
+      <button id="btnStep">Step</button>
+      <button id="btnIter">Iterate</button>
+    </div>
+    <div class="controls">
+      <label>N (grid)</label>      <input id="ctlN"      type="range" min="8"   max="48"   step="2"     value="20"><span class="val" id="lblN"></span>
+      <label>cell px</label>       <input id="ctlCell"   type="range" min="2"   max="22"   step="1"     value="10"><span class="val" id="lblCell"></span>
+      <label>κ (kernel coef)</label><input id="ctlKappa" type="range" min="-2"  max="2"    step="0.005" value="0.10"><span class="val" id="lblKappa"></span>
+      <label>cutoff (·N)</label>   <input id="ctlCutoff" type="range" min="0.05" max="0.5" step="0.01"  value="0.25"><span class="val" id="lblCutoff"></span>
+      <label>dt</label>            <input id="ctlDt"     type="range" min="0"   max="1"    step="0.005" value="0.20"><span class="val" id="lblDt"></span>
+      <label>ω relax rate</label>  <input id="ctlOmegaR" type="range" min="0"   max="3"    step="0.01"  value="1.00"><span class="val" id="lblOmegaR"></span>
+      <label>curl-fix rate</label> <input id="ctlCurlR"  type="range" min="0"   max="2"    step="0.01"  value="1.00"><span class="val" id="lblCurlR"></span>
+      <label>jitter amt</label>    <input id="ctlJitter" type="range" min="0"   max="1"    step="0.01"  value="0.05"><span class="val" id="lblJitter"></span>
+      <label>damping</label>       <input id="ctlDamp"   type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
+      <label>div-free iters</label><input id="ctlDivIt"  type="range" min="0"   max="40"   step="1"     value="15"><span class="val" id="lblDivIt"></span>
+      <label>curl-fix iters</label><input id="ctlPsiIt"  type="range" min="0"   max="40"   step="1"     value="15"><span class="val" id="lblPsiIt"></span>
+      <label>conserve mass</label> <input id="ctlConsv" type="checkbox" checked><span class="val">&nbsp;</span>
+      <label>log brightness</label><input id="ctlLog"   type="checkbox"><span class="val">&nbsp;</span>
+      <label>3D yaw°</label>       <input id="ctlYaw"   type="range" min="-180" max="180" step="1"     value="35"><span class="val" id="lblYaw"></span>
+      <label>3D pitch°</label>     <input id="ctlPitch" type="range" min="-90"  max="90"  step="1"     value="25"><span class="val" id="lblPitch"></span>
+      <label>seed density</label>  <input id="ctlSeed"  type="range" min="2"   max="14"  step="1"     value="6"><span class="val" id="lblSeed"></span>
+      <label>trace length</label>  <input id="ctlTrace" type="range" min="5"   max="200" step="1"     value="60"><span class="val" id="lblTrace"></span>
+      <label>slice axis</label>    <select id="ctlAxis"><option value="XY">XY (z fixed)</option><option value="YZ">YZ (x fixed)</option><option value="XZ">XZ (y fixed)</option></select><span class="val">&nbsp;</span>
+      <label>slice index</label>   <input id="ctlSlice" type="range" min="0"   max="47"  step="1"     value="10"><span class="val" id="lblSlice"></span>
+    </div>
+    <div id="status"></div>
+    <div class="legend">
+      Kernel cost is <code>O(N³·R³)</code>. At N=20, cutoff 0.25, that's ≈4 Mops/step (smooth);
+      at N=32 it's ~70 Mops (≈3 fps); N up to 48 supported but slow per step.
+      Direction colour map for slices: each component of M maps to bias from gray —
+      red ↔ x, green ↔ y, blue ↔ z (positive lightens toward axis colour, negative toward complement).
+    </div>
+  </div>
+  <div class="panel">
+    <div class="vislabel">3D streamlines of M (orthographic, depth-shaded)</div>
+    <canvas id="c3d" class="smooth" width="520" height="520"></canvas>
+  </div>
+</div>
+
+<div class="row" style="margin-top: 12px">
+  <div class="panel"><div class="vislabel">M slice — direction (RGB) × |M|</div><canvas id="cMSlice"></canvas></div>
+  <div class="panel"><div class="vislabel">|M| heatmap</div><canvas id="cMMag"></canvas></div>
+  <div class="panel"><div class="vislabel">|ω| heatmap</div><canvas id="cOmegaMag"></canvas></div>
+  <div class="panel"><div class="vislabel">|curl(M) − ω| (residual)</div><canvas id="cCurlErr"></canvas></div>
+  <div class="panel"><div class="vislabel">∇·M residual (signed)</div><canvas id="cDiv"></canvas></div>
+</div>
+
+<script>
+'use strict';
+
+// ── State ────────────────────────────────────────────────────────────
+let N         = 20;
+let cell      = 10;
+let M, omega, omegaTarget, A, chi;     // 3D fields
+let targetMass = 0;
+let logBright  = false;
+let stepCount  = 0;
+let iterating  = false;
+let lastTime   = performance.now();
+let frames     = 0;
+let fps        = 0;
+
+const $    = id => document.getElementById(id);
+const stat = $('status');
+
+// Indexing: position (i, j, k) where i ↔ z, j ↔ y, k ↔ x.
+// Vector layout: M[3*(i*N*N + j*N + k) + c], c ∈ {0:x, 1:y, 2:z}.
+function vIdx(i, j, k) { return 3*((i*N + j)*N + k); }
+function sIdx(i, j, k) { return (i*N + j)*N + k; }
+
+function alloc(n) {
+  N = n;
+  const N3 = N*N*N;
+  M           = new Float32Array(3*N3);
+  omega       = new Float32Array(3*N3);
+  omegaTarget = new Float32Array(3*N3);
+  A           = new Float32Array(3*N3);
+  chi         = new Float32Array(N3);
+  // adjust slice slider range
+  const slice = $('ctlSlice');
+  slice.max   = N-1;
+  if (parseInt(slice.value) > N-1) slice.value = (N-1) >> 1;
+  $('lblSlice').textContent = slice.value;
+}
+
+function totalMass() {
+  let s = 0;
+  for (let l = 0; l < 3*N*N*N; l += 3) {
+    s += Math.sqrt(M[l]*M[l] + M[l+1]*M[l+1] + M[l+2]*M[l+2]);
+  }
+  return s;
+}
+
+function rescaleMass() {
+  if (!$('ctlConsv').checked) return;
+  const cur = totalMass();
+  if (cur < 1e-9 || targetMass < 1e-9) return;
+  const f = targetMass / cur;
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l++) M[l] *= f;
+}
+
+function randomize() {
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l++) M[l] = (Math.random()*2 - 1);
+  omega.fill(0); omegaTarget.fill(0); A.fill(0); chi.fill(0);
+  projectDivFree(40);
+  targetMass = totalMass();
+  computeCurlInto(omega);
+  computeOmegaTarget(parseFloat($('ctlKappa').value));
+}
+
+function zero() {
+  M.fill(0); omega.fill(0); omegaTarget.fill(0); A.fill(0); chi.fill(0);
+  targetMass = 0;
+}
+
+function jitter(amt) {
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l++) M[l] += (Math.random()*2 - 1) * amt;
+}
+
+// ── Operators ────────────────────────────────────────────────────────
+// div(M) using backward differences  — paired with forward-diff grad → 7-point Lap.
+function computeDivInto(out) {
+  for (let i = 0; i < N; i++) {
+    const im = (i-1+N)%N;
+    for (let j = 0; j < N; j++) {
+      const jm = (j-1+N)%N;
+      for (let k = 0; k < N; k++) {
+        const km = (k-1+N)%N;
+        const v  = vIdx(i,j,k);
+        const dx = M[v]   - M[vIdx(i,j,km)];        // ∂Mx/∂x  (x ↔ k)
+        const dy = M[v+1] - M[vIdx(i,jm,k)+1];      // ∂My/∂y  (y ↔ j)
+        const dz = M[v+2] - M[vIdx(im,j,k)+2];      // ∂Mz/∂z  (z ↔ i)
+        out[sIdx(i,j,k)] = dx + dy + dz;
+      }
+    }
+  }
+}
+
+// curl(M) using backward differences — vector field.
+function computeCurlInto(out) {
+  for (let i = 0; i < N; i++) {
+    const im = (i-1+N)%N;
+    for (let j = 0; j < N; j++) {
+      const jm = (j-1+N)%N;
+      for (let k = 0; k < N; k++) {
+        const km = (k-1+N)%N;
+        const v  = vIdx(i,j,k);
+        const Mx  = M[v],   My  = M[v+1], Mz = M[v+2];
+        const Mx_im = M[vIdx(im,j,k)];
+        const Mx_jm = M[vIdx(i,jm,k)];
+        const My_im = M[vIdx(im,j,k)+1];
+        const My_km = M[vIdx(i,j,km)+1];
+        const Mz_jm = M[vIdx(i,jm,k)+2];
+        const Mz_km = M[vIdx(i,j,km)+2];
+        // curl.x = ∂Mz/∂y − ∂My/∂z
+        // curl.y = ∂Mx/∂z − ∂Mz/∂x
+        // curl.z = ∂My/∂x − ∂Mx/∂y
+        out[v]   = (Mz - Mz_jm) - (My - My_im);
+        out[v+1] = (Mx - Mx_im) - (Mz - Mz_km);
+        out[v+2] = (My - My_km) - (Mx - Mx_jm);
+      }
+    }
+  }
+}
+
+// Project M onto divergence-free subspace: M ← M − ∇χ, ∇²χ = ∇·M.
+function projectDivFree(iters) {
+  const N3  = N*N*N;
+  const div = new Float32Array(N3);
+  computeDivInto(div);
+  let s = 0; for (let l = 0; l < N3; l++) s += div[l];
+  const m = s / N3;
+  for (let l = 0; l < N3; l++) div[l] -= m;
+  const tmp = new Float32Array(N3);
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < N; i++) {
+      const ip = (i+1)%N, im = (i-1+N)%N;
+      for (let j = 0; j < N; j++) {
+        const jp = (j+1)%N, jm = (j-1+N)%N;
+        for (let k = 0; k < N; k++) {
+          const kp = (k+1)%N, km = (k-1+N)%N;
+          const sum = chi[sIdx(ip,j,k)] + chi[sIdx(im,j,k)]
+                    + chi[sIdx(i,jp,k)] + chi[sIdx(i,jm,k)]
+                    + chi[sIdx(i,j,kp)] + chi[sIdx(i,j,km)];
+          tmp[sIdx(i,j,k)] = (sum - div[sIdx(i,j,k)]) / 6;
+        }
+      }
+    }
+    chi.set(tmp);
+  }
+  // M -= grad_forward(χ)
+  for (let i = 0; i < N; i++) {
+    const ip = (i+1)%N;
+    for (let j = 0; j < N; j++) {
+      const jp = (j+1)%N;
+      for (let k = 0; k < N; k++) {
+        const kp = (k+1)%N;
+        const c  = chi[sIdx(i,j,k)];
+        const gx = chi[sIdx(i,j,kp)] - c;
+        const gy = chi[sIdx(i,jp,k)] - c;
+        const gz = chi[sIdx(ip,j,k)] - c;
+        const v  = vIdx(i,j,k);
+        M[v]   -= gx;
+        M[v+1] -= gy;
+        M[v+2] -= gz;
+      }
+    }
+  }
+}
+
+// Push curl(M) toward ω: solve ∇²A = −Δ componentwise (Δ = ω − curl(M)),
+// then M ← M + rate · curl_forward(A).
+function applyCurlCorrection(rate, iters) {
+  const N3 = N*N*N;
+  const D  = new Float32Array(3*N3);
+  computeCurlInto(D);
+  for (let l = 0; l < 3*N3; l++) D[l] = omega[l] - D[l];
+  // mean-subtract per component (periodic compatibility)
+  for (let c = 0; c < 3; c++) {
+    let s = 0;
+    for (let l = c; l < 3*N3; l += 3) s += D[l];
+    const m = s / N3;
+    for (let l = c; l < 3*N3; l += 3) D[l] -= m;
+  }
+  const tmp = new Float32Array(3*N3);
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < N; i++) {
+      const ip = (i+1)%N, im = (i-1+N)%N;
+      for (let j = 0; j < N; j++) {
+        const jp = (j+1)%N, jm = (j-1+N)%N;
+        for (let k = 0; k < N; k++) {
+          const kp = (k+1)%N, km = (k-1+N)%N;
+          const ipv = vIdx(ip,j,k), imv = vIdx(im,j,k);
+          const jpv = vIdx(i,jp,k), jmv = vIdx(i,jm,k);
+          const kpv = vIdx(i,j,kp), kmv = vIdx(i,j,km);
+          const v   = vIdx(i,j,k);
+          for (let c = 0; c < 3; c++) {
+            const sum = A[ipv+c] + A[imv+c] + A[jpv+c] + A[jmv+c] + A[kpv+c] + A[kmv+c];
+            tmp[v+c] = (sum + D[v+c]) / 6;
+          }
+        }
+      }
+    }
+    A.set(tmp);
+  }
+  // M += rate · curl_forward(A)
+  for (let i = 0; i < N; i++) {
+    const ip = (i+1)%N;
+    for (let j = 0; j < N; j++) {
+      const jp = (j+1)%N;
+      for (let k = 0; k < N; k++) {
+        const kp = (k+1)%N;
+        const v     = vIdx(i,j,k);
+        const v_ip  = vIdx(ip,j,k);
+        const v_jp  = vIdx(i,jp,k);
+        const v_kp  = vIdx(i,j,kp);
+        const Ax = A[v],   Ay = A[v+1], Az = A[v+2];
+        // curl_fwd(A).x = ∂Az/∂y − ∂Ay/∂z
+        // curl_fwd(A).y = ∂Ax/∂z − ∂Az/∂x
+        // curl_fwd(A).z = ∂Ay/∂x − ∂Ax/∂y
+        const cx = (A[v_jp+2] - Az) - (A[v_ip+1] - Ay);
+        const cy = (A[v_ip]   - Ax) - (A[v_kp+2] - Az);
+        const cz = (A[v_kp+1] - Ay) - (A[v_jp]   - Ax);
+        M[v]   += rate * cx;
+        M[v+1] += rate * cy;
+        M[v+2] += rate * cz;
+      }
+    }
+  }
+}
+
+// ── Kernel: ω_target = κ Σ_p (m × (q−p)) · w(r/R) / r²  with cutoff R = cutoff·N.
+let kerDi = null, kerDj = null, kerDk = null, kerW = null;
+let kerN  = -1, kerCutoff = -1;
+
+function rebuildKernel() {
+  const cutoffFrac = parseFloat($('ctlCutoff').value);
+  if (kerN === N && kerCutoff === cutoffFrac) return;
+  kerN = N; kerCutoff = cutoffFrac;
+  const R  = N * cutoffFrac;
+  const Ri = Math.ceil(R);
+  const Di = [], Dj = [], Dk = [], W = [];
+  for (let di = -Ri; di <= Ri; di++) {
+    for (let dj = -Ri; dj <= Ri; dj++) {
+      for (let dk = -Ri; dk <= Ri; dk++) {
+        if (di === 0 && dj === 0 && dk === 0) continue;
+        const r2 = di*di + dj*dj + dk*dk;
+        const r  = Math.sqrt(r2);
+        if (r >= R) continue;
+        const t = r / R;
+        const w = 1 - 3*t*t + 2*t*t*t;
+        Di.push(di); Dj.push(dj); Dk.push(dk);
+        W.push(w / r2);
+      }
+    }
+  }
+  kerDi = new Int32Array(Di);
+  kerDj = new Int32Array(Dj);
+  kerDk = new Int32Array(Dk);
+  kerW  = new Float32Array(W);
+}
+
+function computeOmegaTarget(kappa) {
+  rebuildKernel();
+  const nOffs = kerDi.length;
+  for (let qi = 0; qi < N; qi++) {
+    for (let qj = 0; qj < N; qj++) {
+      for (let qk = 0; qk < N; qk++) {
+        let sx = 0, sy = 0, sz = 0;
+        for (let o = 0; o < nOffs; o++) {
+          const di = kerDi[o], dj = kerDj[o], dk = kerDk[o], f = kerW[o];
+          const pi = (qi - di + N) % N;
+          const pj = (qj - dj + N) % N;
+          const pk = (qk - dk + N) % N;
+          const ip = vIdx(pi, pj, pk);
+          const mx = M[ip], my = M[ip+1], mz = M[ip+2];
+          // v = q − p has v.x = dk, v.y = dj, v.z = di.
+          // (m × v).x = my·di − mz·dj
+          // (m × v).y = mz·dk − mx·di
+          // (m × v).z = mx·dj − my·dk
+          sx += (my*di - mz*dj) * f;
+          sy += (mz*dk - mx*di) * f;
+          sz += (mx*dj - my*dk) * f;
+        }
+        const v = vIdx(qi, qj, qk);
+        omegaTarget[v]   = kappa * sx;
+        omegaTarget[v+1] = kappa * sy;
+        omegaTarget[v+2] = kappa * sz;
+      }
+    }
+  }
+}
+
+// ── Step ─────────────────────────────────────────────────────────────
+function step(dt, kappa, omegaR, curlR, dampK, divIt, psiIt) {
+  computeOmegaTarget(kappa);
+  const r = Math.min(1, omegaR * dt);
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l++) omega[l] += r * (omegaTarget[l] - omega[l]);
+  if (dampK > 0) {
+    const f = 1 - dampK;
+    for (let l = 0; l < L; l++) M[l] *= f;
+  }
+  applyCurlCorrection(Math.min(1, curlR * dt), psiIt);
+  projectDivFree(divIt);
+  rescaleMass();
+}
+
+// ── Drawing helpers ──────────────────────────────────────────────────
+function nrm(v, mx) {
+  const r = v / Math.max(mx, 1e-9);
+  if (logBright) return Math.log1p(9*r) / Math.log(10);
+  return Math.min(1, r);
+}
+
+function maxVecMag3() {
+  let mx = 1e-9;
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l += 3) {
+    const m = M[l]*M[l] + M[l+1]*M[l+1] + M[l+2]*M[l+2];
+    if (m > mx) mx = m;
+  }
+  return Math.sqrt(mx);
+}
+
+// 2D slice extraction.  axis: 'XY' (z=idx, rows=j, cols=k);
+// 'YZ' (x=idx, rows=i, cols=j); 'XZ' (y=idx, rows=i, cols=k).
+function sliceVec(F, axis, idx) {
+  const out = new Float32Array(3*N*N);
+  if (axis === 'XY') {
+    const i = idx;
+    for (let j = 0; j < N; j++) {
+      for (let k = 0; k < N; k++) {
+        const o = 3*(j*N + k);
+        const v = vIdx(i,j,k);
+        out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+      }
+    }
+  } else if (axis === 'YZ') {
+    const k = idx;
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        const o = 3*(i*N + j);
+        const v = vIdx(i,j,k);
+        out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+      }
+    }
+  } else {
+    const j = idx;
+    for (let i = 0; i < N; i++) {
+      for (let k = 0; k < N; k++) {
+        const o = 3*(i*N + k);
+        const v = vIdx(i,j,k);
+        out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+      }
+    }
+  }
+  return out;
+}
+function sliceScalar(F, axis, idx) {
+  const out = new Float32Array(N*N);
+  if (axis === 'XY') {
+    const i = idx;
+    for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) out[j*N+k] = F[sIdx(i,j,k)];
+  } else if (axis === 'YZ') {
+    const k = idx;
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) out[i*N+j] = F[sIdx(i,j,k)];
+  } else {
+    const j = idx;
+    for (let i = 0; i < N; i++) for (let k = 0; k < N; k++) out[i*N+k] = F[sIdx(i,j,k)];
+  }
+  return out;
+}
+
+function setupSmall(canvas) {
+  canvas.width = N; canvas.height = N;
+  canvas.style.width  = (N*cell) + 'px';
+  canvas.style.height = (N*cell) + 'px';
+}
+
+// Vector slice → RGB with sign-aware bias (gray + axis colours).
+function drawVecSlice(canvas, slice) {
+  setupSmall(canvas);
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  let mx = 1e-9;
+  for (let p = 0; p < 3*N*N; p += 3) {
+    const m = slice[p]*slice[p] + slice[p+1]*slice[p+1] + slice[p+2]*slice[p+2];
+    if (m > mx) mx = m;
+  }
+  mx = Math.sqrt(mx);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const o3 = 3*(i*N + j);
+      const vx = slice[o3], vy = slice[o3+1], vz = slice[o3+2];
+      const mag = Math.sqrt(vx*vx + vy*vy + vz*vz);
+      const v = nrm(mag, mx);
+      // unit vector → bias from gray on each channel
+      let r, g, b;
+      if (mag < 1e-9) { r = g = b = 0; }
+      else {
+        const ux = vx/mag, uy = vy/mag, uz = vz/mag;
+        r = 0.5 + 0.5*ux;
+        g = 0.5 + 0.5*uy;
+        b = 0.5 + 0.5*uz;
+        // boost contrast a touch
+        r = Math.pow(r, 0.85); g = Math.pow(g, 0.85); b = Math.pow(b, 0.85);
+        r *= v; g *= v; b *= v;
+      }
+      const o = 4*(i*N + j);
+      img.data[o]   = (r*255)|0;
+      img.data[o+1] = (g*255)|0;
+      img.data[o+2] = (b*255)|0;
+      img.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawMagSlice(canvas, slice, hueShift = 0.6) {
+  setupSmall(canvas);
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  let mx = 1e-9;
+  for (let p = 0; p < 3*N*N; p += 3) {
+    const m = slice[p]*slice[p] + slice[p+1]*slice[p+1] + slice[p+2]*slice[p+2];
+    if (m > mx) mx = m;
+  }
+  mx = Math.sqrt(mx);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const o3 = 3*(i*N + j);
+      const mag = Math.sqrt(slice[o3]*slice[o3] + slice[o3+1]*slice[o3+1] + slice[o3+2]*slice[o3+2]);
+      const v = nrm(mag, mx);
+      // teal-ish heatmap
+      const r = (40 + 215*v*v)|0;
+      const g = (60 + 180*v)|0;
+      const b = (255*Math.pow(v, 0.6))|0;
+      const o = 4*(i*N + j);
+      img.data[o]   = r;
+      img.data[o+1] = g;
+      img.data[o+2] = b;
+      img.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawScalarSlice(canvas, slice) {
+  setupSmall(canvas);
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  let mx = 1e-9;
+  for (let l = 0; l < N*N; l++) { const v = Math.abs(slice[l]); if (v > mx) mx = v; }
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const v = slice[i*N + j] / mx;
+      const a = Math.abs(v);
+      const o = 4*(i*N + j);
+      if (v > 0) { img.data[o] = 255*a; img.data[o+1] = 110*a; img.data[o+2] = 70*a;  }
+      else       { img.data[o] = 70*a;  img.data[o+1] = 140*a; img.data[o+2] = 255*a; }
+      img.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return mx;
+}
+
+// ── 3D streamline view ───────────────────────────────────────────────
+function sampleM3(px, py, pz) {
+  const fx = ((px % N) + N) % N;
+  const fy = ((py % N) + N) % N;
+  const fz = ((pz % N) + N) % N;
+  const k0 = Math.floor(fx), k1 = (k0+1)%N;
+  const j0 = Math.floor(fy), j1 = (j0+1)%N;
+  const i0 = Math.floor(fz), i1 = (i0+1)%N;
+  const tx = fx - k0, ty = fy - j0, tz = fz - i0;
+  let mx = 0, my = 0, mz = 0;
+  for (let di = 0; di < 2; di++) {
+    const i = di === 0 ? i0 : i1;
+    const wi = di === 0 ? (1-tz) : tz;
+    for (let dj = 0; dj < 2; dj++) {
+      const j  = dj === 0 ? j0 : j1;
+      const wj = dj === 0 ? (1-ty) : ty;
+      for (let dk = 0; dk < 2; dk++) {
+        const k  = dk === 0 ? k0 : k1;
+        const wk = dk === 0 ? (1-tx) : tx;
+        const w  = wi * wj * wk;
+        const v  = vIdx(i,j,k);
+        mx += M[v]*w; my += M[v+1]*w; mz += M[v+2]*w;
+      }
+    }
+  }
+  return [mx, my, mz];
+}
+
+function project3DSetup(W) {
+  const yaw   = parseFloat($('ctlYaw').value)   * Math.PI / 180;
+  const pitch = parseFloat($('ctlPitch').value) * Math.PI / 180;
+  const cy = Math.cos(yaw),   sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const c  = (N-1) / 2;
+  const fit = N * Math.SQRT2;        // diagonal worst case after rotation
+  const scl = (W * 0.85) / fit;
+  // Returns function (x, y, z) → [u, v, depth]
+  return (x, y, z) => {
+    const X = x - c, Y = y - c, Z = z - c;
+    // yaw around Z axis
+    const X1 =  X*cy + Y*sy;
+    const Y1 = -X*sy + Y*cy;
+    const Z1 =  Z;
+    // pitch around X axis
+    const X2 =  X1;
+    const Y2 =  Y1*cp - Z1*sp;
+    const Z2 =  Y1*sp + Z1*cp;
+    return [W/2 + X2*scl, W/2 - Y2*scl, Z2];
+  };
+}
+
+function draw3DStreamlines(canvas) {
+  const W   = canvas.width;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#06060a';
+  ctx.fillRect(0, 0, W, W);
+  const proj = project3DSetup(W);
+
+  // cube wireframe
+  const cube = [];
+  for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) for (let cc = 0; cc < 2; cc++) {
+    cube.push([a*(N-1), b*(N-1), cc*(N-1)]);
+  }
+  const edges = [];
+  for (let p = 0; p < 8; p++) for (let q = p+1; q < 8; q++) {
+    const dx = Math.abs(cube[p][0] - cube[q][0]);
+    const dy = Math.abs(cube[p][1] - cube[q][1]);
+    const dz = Math.abs(cube[p][2] - cube[q][2]);
+    if (dx + dy + dz === (N-1)) edges.push([p, q]);
+  }
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  for (const [p, q] of edges) {
+    const [u0, v0] = proj(cube[p][0], cube[p][1], cube[p][2]);
+    const [u1, v1] = proj(cube[q][0], cube[q][1], cube[q][2]);
+    ctx.moveTo(u0, v0); ctx.lineTo(u1, v1);
+  }
+  ctx.stroke();
+
+  // streamline seeds: regular grid
+  const seedDen = parseInt($('ctlSeed').value);
+  const nSteps  = parseInt($('ctlTrace').value);
+  const mx      = maxVecMag3();
+  if (mx < 1e-9) return;
+  const stepLen = 0.5;
+  const scl     = stepLen / mx;
+
+  // Collect line segments with depths so we can sort painter-style.
+  const segs = [];   // [u0, v0, u1, v1, depth, mag]
+  const stride = Math.max(1, Math.floor(N / seedDen));
+  for (let si = 0; si < N; si += stride) {
+    for (let sj = 0; sj < N; sj += stride) {
+      for (let sk = 0; sk < N; sk += stride) {
+        let x = sk + 0.5, y = sj + 0.5, z = si + 0.5;
+        let [puu, pvv, pdd] = proj(x, y, z);
+        let prevX = x, prevY = y, prevZ = z;
+        for (let s = 0; s < nSteps; s++) {
+          const [vx, vy, vz] = sampleM3(x, y, z);
+          const m = Math.sqrt(vx*vx + vy*vy + vz*vz);
+          if (m < 1e-9) break;
+          x += vx * scl; y += vy * scl; z += vz * scl;
+          // wrap: if path crosses the boundary, break the segment to avoid spurious lines
+          const dx = x - prevX, dy = y - prevY, dz = z - prevZ;
+          let wrapped = false;
+          if (Math.abs(dx) > N/2 || Math.abs(dy) > N/2 || Math.abs(dz) > N/2) wrapped = true;
+          x = ((x % N) + N) % N;
+          y = ((y % N) + N) % N;
+          z = ((z % N) + N) % N;
+          const [u, v, d] = proj(x, y, z);
+          if (!wrapped) {
+            segs.push([puu, pvv, u, v, 0.5*(pdd + d), m / mx]);
+          }
+          puu = u; pvv = v; pdd = d;
+          prevX = x; prevY = y; prevZ = z;
+        }
+      }
+    }
+  }
+  // depth sort: far first (smaller depth → farther from viewer if we set sign appropriately).
+  // After our rotation the camera is along +z_view, so larger Z2 → closer; sort ascending.
+  segs.sort((a, b) => a[4] - b[4]);
+  ctx.lineCap = 'round';
+  for (const seg of segs) {
+    const [u0, v0, u1, v1, d, mag] = seg;
+    // depth-shaded colour: closer → lighter / warmer
+    const dz   = d / (N * 0.5);            // roughly in [-1, 1]
+    const t    = 0.5 + 0.5*dz;             // in [0, 1]
+    const norm = nrm(mag, 1);
+    const r = (60 + (180 + 75*t)*norm)|0;
+    const g = (60 + (110 + 100*t)*norm)|0;
+    const b = (110 + (90  + 130*t)*norm)|0;
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.35 + 0.55*norm})`;
+    ctx.lineWidth   = 0.4 + 1.4*norm;
+    ctx.beginPath();
+    ctx.moveTo(u0, v0); ctx.lineTo(u1, v1);
+    ctx.stroke();
+  }
+
+  // axis tripod at corner for orientation
+  const [u0, v0]       = proj(0, 0, 0);
+  const [uxe, vxe]     = proj(N*0.25, 0, 0);
+  const [uye, vye]     = proj(0, N*0.25, 0);
+  const [uze, vze]     = proj(0, 0, N*0.25);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#e66'; ctx.beginPath(); ctx.moveTo(u0, v0); ctx.lineTo(uxe, vxe); ctx.stroke();
+  ctx.strokeStyle = '#6e6'; ctx.beginPath(); ctx.moveTo(u0, v0); ctx.lineTo(uye, vye); ctx.stroke();
+  ctx.strokeStyle = '#69f'; ctx.beginPath(); ctx.moveTo(u0, v0); ctx.lineTo(uze, vze); ctx.stroke();
+  ctx.fillStyle = '#aaa'; ctx.font = '10px ui-monospace,monospace';
+  ctx.fillText('x', uxe + 4, vxe);
+  ctx.fillText('y', uye + 4, vye);
+  ctx.fillText('z', uze + 4, vze);
+}
+
+// ── Master render ────────────────────────────────────────────────────
+function render() {
+  draw3DStreamlines($('c3d'));
+
+  const axis = $('ctlAxis').value;
+  const idx  = Math.min(parseInt($('ctlSlice').value), N-1);
+
+  drawVecSlice($('cMSlice'), sliceVec(M, axis, idx));
+  drawMagSlice($('cMMag'),    sliceVec(M, axis, idx));
+  drawMagSlice($('cOmegaMag'), sliceVec(omega, axis, idx));
+
+  // |curl(M) - ω| — compute residual scalar at this slice
+  const curl = new Float32Array(3*N*N*N);
+  computeCurlInto(curl);
+  const errSlice = new Float32Array(N*N);
+  if (axis === 'XY') {
+    const i = idx;
+    for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) {
+      const v = vIdx(i,j,k);
+      const ex = curl[v]   - omega[v];
+      const ey = curl[v+1] - omega[v+1];
+      const ez = curl[v+2] - omega[v+2];
+      errSlice[j*N+k] = Math.sqrt(ex*ex + ey*ey + ez*ez);
+    }
+  } else if (axis === 'YZ') {
+    const k = idx;
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const v = vIdx(i,j,k);
+      const ex = curl[v]   - omega[v];
+      const ey = curl[v+1] - omega[v+1];
+      const ez = curl[v+2] - omega[v+2];
+      errSlice[i*N+j] = Math.sqrt(ex*ex + ey*ey + ez*ez);
+    }
+  } else {
+    const j = idx;
+    for (let i = 0; i < N; i++) for (let k = 0; k < N; k++) {
+      const v = vIdx(i,j,k);
+      const ex = curl[v]   - omega[v];
+      const ey = curl[v+1] - omega[v+1];
+      const ez = curl[v+2] - omega[v+2];
+      errSlice[i*N+k] = Math.sqrt(ex*ex + ey*ey + ez*ez);
+    }
+  }
+  // signed but here always nonneg → use scalar drawing
+  drawScalarSlice($('cCurlErr'), errSlice);
+
+  const div = new Float32Array(N*N*N);
+  computeDivInto(div);
+  const maxDiv = drawScalarSlice($('cDiv'), sliceScalar(div, axis, idx));
+
+  // status numbers
+  const N3 = N*N*N;
+  let totM = 0, sumW = 0, sumWT = 0, sumErr = 0;
+  for (let l = 0; l < 3*N3; l += 3) {
+    totM   += Math.sqrt(M[l]*M[l] + M[l+1]*M[l+1] + M[l+2]*M[l+2]);
+    sumW   += Math.sqrt(omega[l]*omega[l] + omega[l+1]*omega[l+1] + omega[l+2]*omega[l+2]);
+    sumWT  += Math.sqrt(omegaTarget[l]*omegaTarget[l] + omegaTarget[l+1]*omegaTarget[l+1] + omegaTarget[l+2]*omegaTarget[l+2]);
+    const ex = curl[l]   - omega[l];
+    const ey = curl[l+1] - omega[l+1];
+    const ez = curl[l+2] - omega[l+2];
+    sumErr += Math.sqrt(ex*ex + ey*ey + ez*ez);
+  }
+  let maxAbsDiv = 0;
+  for (let l = 0; l < N3; l++) { const v = Math.abs(div[l]); if (v > maxAbsDiv) maxAbsDiv = v; }
+
+  stat.textContent =
+    `step=${stepCount}  N=${N}³  Σ|M|=${totM.toFixed(2)} (target ${targetMass.toFixed(2)})  ` +
+    `Σ|ω|=${sumW.toFixed(2)}  Σ|ω_target|=${sumWT.toFixed(2)}  ` +
+    `mean|curl(M)−ω|=${(sumErr/N3).toExponential(2)}  ` +
+    `max|∇·M|=${maxAbsDiv.toExponential(2)}  ` +
+    (iterating ? `${fps.toFixed(0)} fps` : 'idle');
+}
+
+// ── Loop ────────────────────────────────────────────────────────────
+function tick() {
+  if (!iterating) return;
+  const dt     = parseFloat($('ctlDt').value);
+  const kappa  = parseFloat($('ctlKappa').value);
+  const omegaR = parseFloat($('ctlOmegaR').value);
+  const curlR  = parseFloat($('ctlCurlR').value);
+  const damp   = parseFloat($('ctlDamp').value);
+  const divIt  = parseInt($('ctlDivIt').value);
+  const psiIt  = parseInt($('ctlPsiIt').value);
+  step(dt, kappa, omegaR, curlR, damp, divIt, psiIt);
+  stepCount++;
+  frames++;
+  const now = performance.now();
+  if (now - lastTime > 500) {
+    fps      = frames * 1000 / (now - lastTime);
+    lastTime = now; frames = 0;
+  }
+  render();
+  requestAnimationFrame(tick);
+}
+
+// ── UI hookup ──────────────────────────────────────────────────────
+function bindLabel(id, lblId) {
+  const el  = $(id), lbl = $(lblId);
+  const upd = () => { lbl.textContent = el.value; };
+  el.addEventListener('input', upd); upd();
+}
+bindLabel('ctlN','lblN');
+bindLabel('ctlCell','lblCell');
+bindLabel('ctlDt','lblDt');
+bindLabel('ctlKappa','lblKappa');
+bindLabel('ctlCutoff','lblCutoff');
+bindLabel('ctlOmegaR','lblOmegaR');
+bindLabel('ctlCurlR','lblCurlR');
+bindLabel('ctlJitter','lblJitter');
+bindLabel('ctlDamp','lblDamp');
+bindLabel('ctlDivIt','lblDivIt');
+bindLabel('ctlPsiIt','lblPsiIt');
+bindLabel('ctlYaw','lblYaw');
+bindLabel('ctlPitch','lblPitch');
+bindLabel('ctlSeed','lblSeed');
+bindLabel('ctlTrace','lblTrace');
+bindLabel('ctlSlice','lblSlice');
+
+$('ctlN').addEventListener('change', e => {
+  alloc(parseInt(e.target.value));
+  randomize();
+  stepCount = 0;
+  render();
+});
+$('ctlCell').addEventListener('input', e => { cell = parseInt(e.target.value); render(); });
+$('ctlLog').addEventListener('change', e => { logBright = e.target.checked; render(); });
+$('ctlYaw').addEventListener('input',   () => { draw3DStreamlines($('c3d')); });
+$('ctlPitch').addEventListener('input', () => { draw3DStreamlines($('c3d')); });
+$('ctlSeed').addEventListener('input',  () => { draw3DStreamlines($('c3d')); });
+$('ctlTrace').addEventListener('input', () => { draw3DStreamlines($('c3d')); });
+$('ctlAxis').addEventListener('change', () => render());
+$('ctlSlice').addEventListener('input', () => render());
+$('ctlCutoff').addEventListener('change', () => {
+  computeOmegaTarget(parseFloat($('ctlKappa').value));
+  render();
+});
+$('btnRand').addEventListener('click', () => { randomize(); stepCount = 0; render(); });
+$('btnZero').addEventListener('click', () => { zero(); stepCount = 0; render(); });
+$('btnJitter').addEventListener('click', () => {
+  jitter(parseFloat($('ctlJitter').value));
+  projectDivFree(parseInt($('ctlDivIt').value));
+  rescaleMass();
+  computeOmegaTarget(parseFloat($('ctlKappa').value));
+  render();
+});
+$('btnStep').addEventListener('click', () => {
+  const dt     = parseFloat($('ctlDt').value);
+  const kappa  = parseFloat($('ctlKappa').value);
+  const omegaR = parseFloat($('ctlOmegaR').value);
+  const curlR  = parseFloat($('ctlCurlR').value);
+  const damp   = parseFloat($('ctlDamp').value);
+  const divIt  = parseInt($('ctlDivIt').value);
+  const psiIt  = parseInt($('ctlPsiIt').value);
+  step(dt, kappa, omegaR, curlR, damp, divIt, psiIt);
+  stepCount++;
+  render();
+});
+const btnIter = $('btnIter');
+btnIter.addEventListener('click', () => {
+  iterating = !iterating;
+  btnIter.classList.toggle('active', iterating);
+  btnIter.textContent = iterating ? 'Stop' : 'Iterate';
+  if (iterating) { lastTime = performance.now(); frames = 0; requestAnimationFrame(tick); }
+});
+
+// Mouse drag on the 3D canvas controls yaw / pitch.
+(() => {
+  const c = $('c3d');
+  let dragging = false, lastX = 0, lastY = 0;
+  c.addEventListener('mousedown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+  window.addEventListener('mouseup', () => { dragging = false; });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    const yaw   = $('ctlYaw');
+    const pitch = $('ctlPitch');
+    yaw.value   = String(((parseFloat(yaw.value)   + dx*0.5 + 540) % 360) - 180);
+    pitch.value = String(Math.max(-90, Math.min(90, parseFloat(pitch.value) - dy*0.5)));
+    $('lblYaw').textContent   = yaw.value;
+    $('lblPitch').textContent = pitch.value;
+    draw3DStreamlines($('c3d'));
+  });
+})();
+
+// ── Init ───────────────────────────────────────────────────────────
+cell = parseInt($('ctlCell').value);
+alloc(parseInt($('ctlN').value));
+randomize();
+render();
+</script>
+</body>
+</html>
