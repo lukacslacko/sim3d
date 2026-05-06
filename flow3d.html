@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>flow3d — sourceless mass-flow with self-gravity (gradient descent on Dirichlet-gravity energy)</title>
+<style>
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0a0a10; color: #e8e8ee; margin: 0; padding: 12px; }
+  h1 { font-size: 16px; margin: 0 0 6px 0; color: #ccd; }
+  p.lead { font-size: 11px; color: #889; max-width: 920px; line-height: 1.45; margin: 0 0 10px 0; }
+  p.lead code { color: #cdc; }
+  button { padding: 4px 10px; background: #222; color: #eee; border: 1px solid #555; cursor: pointer; font-family: inherit; font-size: 12px; }
+  button.active { background: #2a4a6a; border-color: #69a; }
+  button:hover { background: #2c2c34; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+  .panel { background: #14141c; padding: 8px; border-radius: 4px; border: 1px solid #222; }
+  canvas { background: #000; image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
+  canvas.smooth { image-rendering: auto; }
+  .controls { display: grid; grid-template-columns: auto 1fr 64px; gap: 4px 8px; align-items: center; width: 380px; }
+  .controls input[type=range] { width: 100%; }
+  .controls input[type=checkbox], .controls select { justify-self: start; }
+  .controls select { background: #222; color: #eee; border: 1px solid #555; font-family: inherit; font-size: 11px; }
+  .controls label { white-space: nowrap; font-size: 11px; }
+  .controls .val { font-size: 11px; color: #aac; text-align: right; font-variant-numeric: tabular-nums; }
+  .vislabel { font-size: 11px; color: #aac; margin-bottom: 4px; }
+  #status { font-size: 11px; color: #aac; margin-top: 8px; line-height: 1.5; max-width: 380px; font-variant-numeric: tabular-nums; }
+  .legend { font-size: 10px; color: #889; max-width: 380px; line-height: 1.4; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>flow3d — sourceless mass-flow with self-gravity</h1>
+<p class="lead">
+<b>V</b> is a divergence-free 3D mass-current field on a periodic <code>N×N×N</code> torus
+(direction = local time-arrow, length = mass density). <b>Φ</b> is a scalar gravitational
+potential satisfying <code>∇²Φ = −κ|V|</code> on the torus.
+We do gradient descent on
+<code>E[V,Φ] = ∫ [½|∇V|² − Φ|V| + (1/8πG)|∇Φ|²] d³x</code> subject to <code>∇·V = 0</code>.
+Each step:
+(1) solve <code>∇²Φ = −κ·(|V|−⟨|V|⟩)</code> by Jacobi;
+(2) <code>V ← V + dt·(ν·∇²V + g·Φ·V̂)</code> with regularised <code>V̂ = V/√(|V|²+ε²)</code>;
+(3) Helmholtz-project V to be div-free (<code>∇²χ = ∇·V</code>, <code>V ← V − ∇χ</code>);
+(4) optionally rescale Σ|V| to its Randomize value.
+The Dirichlet term <code>½|∇V|²</code> resists infinite concentration; the <code>−Φ|V|</code>
+term is the gravitational instability that condenses streamlines into channels; <code>∇·V = 0</code>
+plus torus topology keeps streamlines closed.
+</p>
+
+<div class="row">
+  <div class="panel">
+    <div class="row" style="margin-bottom: 8px">
+      <button id="btnRand">Randomize</button>
+      <button id="btnZero">Zero</button>
+      <button id="btnJitter">Jitter</button>
+      <button id="btnStep">Step</button>
+      <button id="btnIter">Iterate</button>
+    </div>
+    <div class="controls">
+      <label>N (grid)</label>      <input id="ctlN"        type="range" min="8"   max="48"   step="2"     value="16"><span class="val" id="lblN"></span>
+      <label>cell px</label>       <input id="ctlCell"     type="range" min="2"   max="22"   step="1"     value="12"><span class="val" id="lblCell"></span>
+      <label>dt</label>            <input id="ctlDt"       type="range" min="0"   max="0.2"  step="0.001" value="0.020"><span class="val" id="lblDt"></span>
+      <label>ν tension</label>     <input id="ctlNu"       type="range" min="0"   max="3"    step="0.01"  value="1.00"><span class="val" id="lblNu"></span>
+      <label>g gravity</label>     <input id="ctlG"        type="range" min="-2"  max="2"    step="0.01"  value="0.50"><span class="val" id="lblG"></span>
+      <label>κ Φ-source</label>    <input id="ctlKappa"    type="range" min="0"   max="4"    step="0.01"  value="1.00"><span class="val" id="lblKappa"></span>
+      <label>jitter amt</label>    <input id="ctlJitter"   type="range" min="0"   max="1"    step="0.01"  value="0.05"><span class="val" id="lblJitter"></span>
+      <label>damping</label>       <input id="ctlDamp"     type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
+      <label>div-free iters</label><input id="ctlDivIt"    type="range" min="0"   max="40"   step="1"     value="15"><span class="val" id="lblDivIt"></span>
+      <label>potential iters</label><input id="ctlPotIt"   type="range" min="0"   max="40"   step="1"     value="15"><span class="val" id="lblPotIt"></span>
+      <label>conserve mass</label> <input id="ctlConsv"    type="checkbox" checked><span class="val">&nbsp;</span>
+      <label>log brightness</label><input id="ctlLog"      type="checkbox"><span class="val">&nbsp;</span>
+      <label>3D yaw°</label>       <input id="ctlYaw"      type="range" min="-180" max="180" step="1"     value="35"><span class="val" id="lblYaw"></span>
+      <label>3D pitch°</label>     <input id="ctlPitch"    type="range" min="-90"  max="90"  step="1"     value="25"><span class="val" id="lblPitch"></span>
+      <label>seed density</label>  <input id="ctlSeed"     type="range" min="2"   max="14"  step="1"     value="6"><span class="val" id="lblSeed"></span>
+      <label>trace length</label>  <input id="ctlTrace"    type="range" min="5"   max="200" step="1"     value="80"><span class="val" id="lblTrace"></span>
+      <label>slice axis</label>    <select id="ctlAxis"><option value="XY">XY (z fixed)</option><option value="YZ">YZ (x fixed)</option><option value="XZ">XZ (y fixed)</option></select><span class="val">&nbsp;</span>
+      <label>slice index</label>   <input id="ctlSlice"    type="range" min="0"   max="47"  step="1"     value="8"><span class="val" id="lblSlice"></span>
+    </div>
+    <div id="status"></div>
+    <div class="legend">
+      Try increasing <b>g</b> (or making it negative) and watch streamlines bunch up. Higher κ
+      sharpens Φ for a given mass distribution. Step size dt should scale roughly as 1/N²
+      because Φ scales like |V|·N²; if the energy / Σ|V| grows or oscillates, lower dt.
+      Direction colour map for slice: x ↔ red, y ↔ green, z ↔ blue (each component biases the
+      colour from gray toward the axis colour).
+    </div>
+  </div>
+  <div class="panel">
+    <div class="vislabel">3D streamlines of V (orthographic, depth-shaded; drag to rotate)</div>
+    <canvas id="c3d" class="smooth" width="520" height="520"></canvas>
+  </div>
+</div>
+
+<div class="row" style="margin-top: 12px">
+  <div class="panel"><div class="vislabel">V slice — direction (RGB) × |V|</div><canvas id="cVSlice"></canvas></div>
+  <div class="panel"><div class="vislabel">|V| heatmap</div><canvas id="cVMag"></canvas></div>
+  <div class="panel"><div class="vislabel">Φ (red=+, blue=−)</div><canvas id="cPhi"></canvas></div>
+  <div class="panel"><div class="vislabel">−Φ·|V| (energy density of coupling)</div><canvas id="cEnerg"></canvas></div>
+  <div class="panel"><div class="vislabel">∇·V residual (signed)</div><canvas id="cDiv"></canvas></div>
+</div>
+
+<script>
+'use strict';
+
+// ── State ────────────────────────────────────────────────────────────
+let N = 16;
+let cell = 12;
+let V, Phi, chi;
+let targetMass = 0;
+let logBright = false;
+let stepCount = 0;
+let iterating = false;
+let lastTime = performance.now();
+let frames = 0;
+let fps = 0;
+
+const $ = id => document.getElementById(id);
+const stat = $('status');
+
+// (i, j, k) where i ↔ z, j ↔ y, k ↔ x.  Vector layout V[3*idx + c], c ∈ {0:x,1:y,2:z}.
+function vIdx(i, j, k) { return 3*((i*N + j)*N + k); }
+function sIdx(i, j, k) { return (i*N + j)*N + k; }
+
+function alloc(n) {
+  N = n;
+  const N3 = N*N*N;
+  V    = new Float32Array(3*N3);
+  Phi  = new Float32Array(N3);
+  chi  = new Float32Array(N3);
+  const slice = $('ctlSlice');
+  slice.max   = N - 1;
+  if (parseInt(slice.value) > N - 1) slice.value = (N - 1) >> 1;
+  $('lblSlice').textContent = slice.value;
+}
+
+function totalMass() {
+  let s = 0;
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l += 3) {
+    s += Math.sqrt(V[l]*V[l] + V[l+1]*V[l+1] + V[l+2]*V[l+2]);
+  }
+  return s;
+}
+
+function rescaleMass() {
+  if (!$('ctlConsv').checked) return;
+  const cur = totalMass();
+  if (cur < 1e-9 || targetMass < 1e-9) return;
+  const f = targetMass / cur;
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l++) V[l] *= f;
+}
+
+function randomize() {
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l++) V[l] = (Math.random()*2 - 1);
+  Phi.fill(0); chi.fill(0);
+  projectDivFree(40);
+  targetMass = totalMass();
+  computePotential(40);
+}
+
+function zero()   { V.fill(0); Phi.fill(0); chi.fill(0); targetMass = 0; }
+function jitter(amt) {
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l++) V[l] += (Math.random()*2 - 1) * amt;
+}
+
+// ── Operators ────────────────────────────────────────────────────────
+function computeDivInto(out) {
+  for (let i = 0; i < N; i++) {
+    const im = (i-1+N)%N;
+    for (let j = 0; j < N; j++) {
+      const jm = (j-1+N)%N;
+      for (let k = 0; k < N; k++) {
+        const km = (k-1+N)%N;
+        const v = vIdx(i,j,k);
+        const dx = V[v]   - V[vIdx(i,j,km)];
+        const dy = V[v+1] - V[vIdx(i,jm,k)+1];
+        const dz = V[v+2] - V[vIdx(im,j,k)+2];
+        out[sIdx(i,j,k)] = dx + dy + dz;
+      }
+    }
+  }
+}
+
+function projectDivFree(iters) {
+  const N3  = N*N*N;
+  const div = new Float32Array(N3);
+  computeDivInto(div);
+  let s = 0; for (let l = 0; l < N3; l++) s += div[l];
+  const m = s / N3;
+  for (let l = 0; l < N3; l++) div[l] -= m;
+  const tmp = new Float32Array(N3);
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < N; i++) {
+      const ip = (i+1)%N, im = (i-1+N)%N;
+      for (let j = 0; j < N; j++) {
+        const jp = (j+1)%N, jm = (j-1+N)%N;
+        for (let k = 0; k < N; k++) {
+          const kp = (k+1)%N, km = (k-1+N)%N;
+          const sum = chi[sIdx(ip,j,k)] + chi[sIdx(im,j,k)]
+                    + chi[sIdx(i,jp,k)] + chi[sIdx(i,jm,k)]
+                    + chi[sIdx(i,j,kp)] + chi[sIdx(i,j,km)];
+          tmp[sIdx(i,j,k)] = (sum - div[sIdx(i,j,k)]) / 6;
+        }
+      }
+    }
+    chi.set(tmp);
+  }
+  for (let i = 0; i < N; i++) {
+    const ip = (i+1)%N;
+    for (let j = 0; j < N; j++) {
+      const jp = (j+1)%N;
+      for (let k = 0; k < N; k++) {
+        const kp = (k+1)%N;
+        const c  = chi[sIdx(i,j,k)];
+        const gx = chi[sIdx(i,j,kp)] - c;
+        const gy = chi[sIdx(i,jp,k)] - c;
+        const gz = chi[sIdx(ip,j,k)] - c;
+        const v  = vIdx(i,j,k);
+        V[v]   -= gx;
+        V[v+1] -= gy;
+        V[v+2] -= gz;
+      }
+    }
+  }
+}
+
+// Solve ∇²Φ = −κ·(|V|−⟨|V|⟩) by Jacobi (warm-started Φ).
+function computePotential(iters) {
+  const kappa = parseFloat($('ctlKappa').value);
+  const N3 = N*N*N;
+  const src = new Float32Array(N3);
+  let total = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      for (let k = 0; k < N; k++) {
+        const v = vIdx(i,j,k);
+        const m = Math.sqrt(V[v]*V[v] + V[v+1]*V[v+1] + V[v+2]*V[v+2]);
+        const s = -kappa * m;
+        src[sIdx(i,j,k)] = s;
+        total += s;
+      }
+    }
+  }
+  const mean = total / N3;
+  for (let l = 0; l < N3; l++) src[l] -= mean;
+  // 5-point Jacobi: 6Φ = sum_neighbours − src ⇒ Φ_new = (sum − src)/6
+  const tmp = new Float32Array(N3);
+  for (let it = 0; it < iters; it++) {
+    for (let i = 0; i < N; i++) {
+      const ip = (i+1)%N, im = (i-1+N)%N;
+      for (let j = 0; j < N; j++) {
+        const jp = (j+1)%N, jm = (j-1+N)%N;
+        for (let k = 0; k < N; k++) {
+          const kp = (k+1)%N, km = (k-1+N)%N;
+          const sum = Phi[sIdx(ip,j,k)] + Phi[sIdx(im,j,k)]
+                    + Phi[sIdx(i,jp,k)] + Phi[sIdx(i,jm,k)]
+                    + Phi[sIdx(i,j,kp)] + Phi[sIdx(i,j,km)];
+          tmp[sIdx(i,j,k)] = (sum - src[sIdx(i,j,k)]) / 6;
+        }
+      }
+    }
+    Phi.set(tmp);
+  }
+}
+
+// Force: F = ν·∇²V + g·Φ·V̂   with V̂ = V / √(|V|² + ε²).
+// Computed into a buffer, then applied to V (so the Laplacian uses old neighbours).
+function step(dt, nu, gravG, dampK, divIt, potIt) {
+  computePotential(potIt);
+  const eps2 = 1e-6;
+  const L    = 3*N*N*N;
+  const F    = new Float32Array(L);
+  for (let i = 0; i < N; i++) {
+    const ip = (i+1)%N, im = (i-1+N)%N;
+    for (let j = 0; j < N; j++) {
+      const jp = (j+1)%N, jm = (j-1+N)%N;
+      for (let k = 0; k < N; k++) {
+        const kp = (k+1)%N, km = (k-1+N)%N;
+        const v   = vIdx(i,j,k);
+        const ipv = vIdx(ip,j,k), imv = vIdx(im,j,k);
+        const jpv = vIdx(i,jp,k), jmv = vIdx(i,jm,k);
+        const kpv = vIdx(i,j,kp), kmv = vIdx(i,j,km);
+        const Vx = V[v], Vy = V[v+1], Vz = V[v+2];
+        const phi = Phi[sIdx(i,j,k)];
+        const inv = 1 / Math.sqrt(Vx*Vx + Vy*Vy + Vz*Vz + eps2);
+        const lapX = V[ipv]   + V[imv]   + V[jpv]   + V[jmv]   + V[kpv]   + V[kmv]   - 6*Vx;
+        const lapY = V[ipv+1] + V[imv+1] + V[jpv+1] + V[jmv+1] + V[kpv+1] + V[kmv+1] - 6*Vy;
+        const lapZ = V[ipv+2] + V[imv+2] + V[jpv+2] + V[jmv+2] + V[kpv+2] + V[kmv+2] - 6*Vz;
+        const gp   = gravG * phi * inv;
+        F[v]   = nu * lapX + gp * Vx;
+        F[v+1] = nu * lapY + gp * Vy;
+        F[v+2] = nu * lapZ + gp * Vz;
+      }
+    }
+  }
+  for (let l = 0; l < L; l++) V[l] += dt * F[l];
+  if (dampK > 0) {
+    const f = 1 - dampK;
+    for (let l = 0; l < L; l++) V[l] *= f;
+  }
+  projectDivFree(divIt);
+  rescaleMass();
+}
+
+// ── Drawing helpers ──────────────────────────────────────────────────
+function nrm(v, mx) {
+  const r = v / Math.max(mx, 1e-9);
+  if (logBright) return Math.log1p(9*r) / Math.log(10);
+  return Math.min(1, r);
+}
+
+function maxVecMag3() {
+  let mx = 1e-9;
+  const L = 3*N*N*N;
+  for (let l = 0; l < L; l += 3) {
+    const m = V[l]*V[l] + V[l+1]*V[l+1] + V[l+2]*V[l+2];
+    if (m > mx) mx = m;
+  }
+  return Math.sqrt(mx);
+}
+
+function sliceVec(F, axis, idx) {
+  const out = new Float32Array(3*N*N);
+  if (axis === 'XY') {
+    const i = idx;
+    for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) {
+      const v = vIdx(i,j,k); const o = 3*(j*N+k);
+      out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+    }
+  } else if (axis === 'YZ') {
+    const k = idx;
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const v = vIdx(i,j,k); const o = 3*(i*N+j);
+      out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+    }
+  } else {
+    const j = idx;
+    for (let i = 0; i < N; i++) for (let k = 0; k < N; k++) {
+      const v = vIdx(i,j,k); const o = 3*(i*N+k);
+      out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+    }
+  }
+  return out;
+}
+function sliceScalar(F, axis, idx) {
+  const out = new Float32Array(N*N);
+  if (axis === 'XY') {
+    const i = idx;
+    for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) out[j*N+k] = F[sIdx(i,j,k)];
+  } else if (axis === 'YZ') {
+    const k = idx;
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) out[i*N+j] = F[sIdx(i,j,k)];
+  } else {
+    const j = idx;
+    for (let i = 0; i < N; i++) for (let k = 0; k < N; k++) out[i*N+k] = F[sIdx(i,j,k)];
+  }
+  return out;
+}
+
+function setupSmall(canvas) {
+  canvas.width = N; canvas.height = N;
+  canvas.style.width  = (N*cell) + 'px';
+  canvas.style.height = (N*cell) + 'px';
+}
+
+function drawVecSlice(canvas, slice) {
+  setupSmall(canvas);
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  let mx = 1e-9;
+  for (let p = 0; p < 3*N*N; p += 3) {
+    const m = slice[p]*slice[p] + slice[p+1]*slice[p+1] + slice[p+2]*slice[p+2];
+    if (m > mx) mx = m;
+  }
+  mx = Math.sqrt(mx);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const o3 = 3*(i*N + j);
+      const vx = slice[o3], vy = slice[o3+1], vz = slice[o3+2];
+      const mag = Math.sqrt(vx*vx + vy*vy + vz*vz);
+      const v = nrm(mag, mx);
+      let r, g, b;
+      if (mag < 1e-9) { r = g = b = 0; }
+      else {
+        const ux = vx/mag, uy = vy/mag, uz = vz/mag;
+        r = Math.pow(0.5 + 0.5*ux, 0.85) * v;
+        g = Math.pow(0.5 + 0.5*uy, 0.85) * v;
+        b = Math.pow(0.5 + 0.5*uz, 0.85) * v;
+      }
+      const o = 4*(i*N + j);
+      img.data[o]   = (r*255)|0;
+      img.data[o+1] = (g*255)|0;
+      img.data[o+2] = (b*255)|0;
+      img.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawMagSlice(canvas, slice) {
+  setupSmall(canvas);
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  let mx = 1e-9;
+  for (let p = 0; p < 3*N*N; p += 3) {
+    const m = slice[p]*slice[p] + slice[p+1]*slice[p+1] + slice[p+2]*slice[p+2];
+    if (m > mx) mx = m;
+  }
+  mx = Math.sqrt(mx);
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const o3  = 3*(i*N + j);
+      const mag = Math.sqrt(slice[o3]*slice[o3] + slice[o3+1]*slice[o3+1] + slice[o3+2]*slice[o3+2]);
+      const v = nrm(mag, mx);
+      const r = (40 + 215*v*v)|0;
+      const g = (60 + 180*v)|0;
+      const b = (255*Math.pow(v, 0.6))|0;
+      const o = 4*(i*N + j);
+      img.data[o] = r; img.data[o+1] = g; img.data[o+2] = b; img.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawScalarSigned(canvas, slice) {
+  setupSmall(canvas);
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(N, N);
+  let mx = 1e-9;
+  for (let l = 0; l < N*N; l++) { const v = Math.abs(slice[l]); if (v > mx) mx = v; }
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const v = slice[i*N + j] / mx;
+      const a = Math.abs(v);
+      const o = 4*(i*N + j);
+      if (v > 0) { img.data[o] = 255*a; img.data[o+1] = 110*a; img.data[o+2] = 70*a;  }
+      else       { img.data[o] = 70*a;  img.data[o+1] = 140*a; img.data[o+2] = 255*a; }
+      img.data[o+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return mx;
+}
+
+// ── 3D streamline view ───────────────────────────────────────────────
+function sampleV3(px, py, pz) {
+  const fx = ((px % N) + N) % N;
+  const fy = ((py % N) + N) % N;
+  const fz = ((pz % N) + N) % N;
+  const k0 = Math.floor(fx), k1 = (k0+1)%N;
+  const j0 = Math.floor(fy), j1 = (j0+1)%N;
+  const i0 = Math.floor(fz), i1 = (i0+1)%N;
+  const tx = fx - k0, ty = fy - j0, tz = fz - i0;
+  let mx = 0, my = 0, mz = 0;
+  for (let di = 0; di < 2; di++) {
+    const i  = di === 0 ? i0 : i1;
+    const wi = di === 0 ? (1-tz) : tz;
+    for (let dj = 0; dj < 2; dj++) {
+      const j  = dj === 0 ? j0 : j1;
+      const wj = dj === 0 ? (1-ty) : ty;
+      for (let dk = 0; dk < 2; dk++) {
+        const k  = dk === 0 ? k0 : k1;
+        const wk = dk === 0 ? (1-tx) : tx;
+        const w  = wi * wj * wk;
+        const v  = vIdx(i,j,k);
+        mx += V[v]*w; my += V[v+1]*w; mz += V[v+2]*w;
+      }
+    }
+  }
+  return [mx, my, mz];
+}
+
+function project3DSetup(W) {
+  const yaw   = parseFloat($('ctlYaw').value)   * Math.PI / 180;
+  const pitch = parseFloat($('ctlPitch').value) * Math.PI / 180;
+  const cy = Math.cos(yaw),   sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const c   = (N - 1) / 2;
+  const fit = N * Math.SQRT2;
+  const scl = (W * 0.85) / fit;
+  return (x, y, z) => {
+    const X = x - c, Y = y - c, Z = z - c;
+    const X1 =  X*cy + Y*sy;
+    const Y1 = -X*sy + Y*cy;
+    const Z1 =  Z;
+    const X2 =  X1;
+    const Y2 =  Y1*cp - Z1*sp;
+    const Z2 =  Y1*sp + Z1*cp;
+    return [W/2 + X2*scl, W/2 - Y2*scl, Z2];
+  };
+}
+
+function draw3DStreamlines(canvas) {
+  const W   = canvas.width;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#06060a';
+  ctx.fillRect(0, 0, W, W);
+  const proj = project3DSetup(W);
+
+  // wireframe cube
+  const cube = [];
+  for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) for (let cc = 0; cc < 2; cc++) {
+    cube.push([a*(N-1), b*(N-1), cc*(N-1)]);
+  }
+  const edges = [];
+  for (let p = 0; p < 8; p++) for (let q = p+1; q < 8; q++) {
+    const dx = Math.abs(cube[p][0] - cube[q][0]);
+    const dy = Math.abs(cube[p][1] - cube[q][1]);
+    const dz = Math.abs(cube[p][2] - cube[q][2]);
+    if (dx + dy + dz === (N - 1)) edges.push([p, q]);
+  }
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  for (const [p, q] of edges) {
+    const [u0, v0] = proj(cube[p][0], cube[p][1], cube[p][2]);
+    const [u1, v1] = proj(cube[q][0], cube[q][1], cube[q][2]);
+    ctx.moveTo(u0, v0); ctx.lineTo(u1, v1);
+  }
+  ctx.stroke();
+
+  const seedDen = parseInt($('ctlSeed').value);
+  const nSteps  = parseInt($('ctlTrace').value);
+  const mx      = maxVecMag3();
+  if (mx < 1e-9) { drawTripod(ctx, proj); return; }
+  const stepLen = 0.5;
+  const scl     = stepLen / mx;
+  const stride  = Math.max(1, Math.floor(N / seedDen));
+
+  const segs = [];
+  for (let si = 0; si < N; si += stride) {
+    for (let sj = 0; sj < N; sj += stride) {
+      for (let sk = 0; sk < N; sk += stride) {
+        let x = sk + 0.5, y = sj + 0.5, z = si + 0.5;
+        let [puu, pvv, pdd] = proj(x, y, z);
+        let prevX = x, prevY = y, prevZ = z;
+        for (let s = 0; s < nSteps; s++) {
+          const [vx, vy, vz] = sampleV3(x, y, z);
+          const m = Math.sqrt(vx*vx + vy*vy + vz*vz);
+          if (m < 1e-9) break;
+          x += vx * scl; y += vy * scl; z += vz * scl;
+          const dx = x - prevX, dy = y - prevY, dz = z - prevZ;
+          const wrapped = Math.abs(dx) > N/2 || Math.abs(dy) > N/2 || Math.abs(dz) > N/2;
+          x = ((x % N) + N) % N;
+          y = ((y % N) + N) % N;
+          z = ((z % N) + N) % N;
+          const [u, v, d] = proj(x, y, z);
+          if (!wrapped) segs.push([puu, pvv, u, v, 0.5*(pdd + d), m / mx]);
+          puu = u; pvv = v; pdd = d;
+          prevX = x; prevY = y; prevZ = z;
+        }
+      }
+    }
+  }
+  segs.sort((a, b) => a[4] - b[4]);   // far first
+  ctx.lineCap = 'round';
+  for (const seg of segs) {
+    const [u0, v0, u1, v1, d, mag] = seg;
+    const dz   = d / (N * 0.5);
+    const t    = 0.5 + 0.5*dz;
+    const norm = nrm(mag, 1);
+    const r = (60 + (180 + 75*t)*norm)|0;
+    const g = (60 + (110 + 100*t)*norm)|0;
+    const b = (110 + (90  + 130*t)*norm)|0;
+    ctx.strokeStyle = `rgba(${r},${g},${b},${0.35 + 0.55*norm})`;
+    ctx.lineWidth   = 0.4 + 1.4*norm;
+    ctx.beginPath();
+    ctx.moveTo(u0, v0); ctx.lineTo(u1, v1);
+    ctx.stroke();
+  }
+  drawTripod(ctx, proj);
+}
+
+function drawTripod(ctx, proj) {
+  const [u0, v0]   = proj(0, 0, 0);
+  const [uxe, vxe] = proj(N*0.25, 0, 0);
+  const [uye, vye] = proj(0, N*0.25, 0);
+  const [uze, vze] = proj(0, 0, N*0.25);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#e66'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uxe,vxe); ctx.stroke();
+  ctx.strokeStyle = '#6e6'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uye,vye); ctx.stroke();
+  ctx.strokeStyle = '#69f'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uze,vze); ctx.stroke();
+  ctx.fillStyle = '#aaa'; ctx.font = '10px ui-monospace,monospace';
+  ctx.fillText('x', uxe + 4, vxe);
+  ctx.fillText('y', uye + 4, vye);
+  ctx.fillText('z', uze + 4, vze);
+}
+
+// ── Master render ───────────────────────────────────────────────────
+function render() {
+  draw3DStreamlines($('c3d'));
+  const axis = $('ctlAxis').value;
+  const idx  = Math.min(parseInt($('ctlSlice').value), N - 1);
+
+  drawVecSlice($('cVSlice'), sliceVec(V, axis, idx));
+  drawMagSlice($('cVMag'),    sliceVec(V, axis, idx));
+  drawScalarSigned($('cPhi'), sliceScalar(Phi, axis, idx));
+
+  // -Φ·|V| energy density
+  const N3 = N*N*N;
+  const energy = new Float32Array(N3);
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) {
+    const v = vIdx(i,j,k);
+    const m = Math.sqrt(V[v]*V[v] + V[v+1]*V[v+1] + V[v+2]*V[v+2]);
+    energy[sIdx(i,j,k)] = -Phi[sIdx(i,j,k)] * m;
+  }
+  drawScalarSigned($('cEnerg'), sliceScalar(energy, axis, idx));
+
+  const div = new Float32Array(N3);
+  computeDivInto(div);
+  const maxDiv = drawScalarSigned($('cDiv'), sliceScalar(div, axis, idx));
+
+  // status
+  let totV = 0, sumPhi = 0;
+  for (let l = 0; l < 3*N3; l += 3) {
+    totV += Math.sqrt(V[l]*V[l] + V[l+1]*V[l+1] + V[l+2]*V[l+2]);
+  }
+  for (let l = 0; l < N3; l++) sumPhi += Math.abs(Phi[l]);
+  // Energy: ½|∇V|² (use a forward-diff estimate) − Φ|V|; skip the |∇Φ|² piece for speed.
+  let dirich = 0, coupling = 0;
+  for (let i = 0; i < N; i++) {
+    const ip = (i+1)%N;
+    for (let j = 0; j < N; j++) {
+      const jp = (j+1)%N;
+      for (let k = 0; k < N; k++) {
+        const kp = (k+1)%N;
+        const v   = vIdx(i,j,k);
+        const ipv = vIdx(ip,j,k), jpv = vIdx(i,jp,k), kpv = vIdx(i,j,kp);
+        for (let c = 0; c < 3; c++) {
+          const dx = V[kpv+c] - V[v+c];
+          const dy = V[jpv+c] - V[v+c];
+          const dz = V[ipv+c] - V[v+c];
+          dirich += 0.5*(dx*dx + dy*dy + dz*dz);
+        }
+        const m = Math.sqrt(V[v]*V[v] + V[v+1]*V[v+1] + V[v+2]*V[v+2]);
+        coupling += -Phi[sIdx(i,j,k)] * m;
+      }
+    }
+  }
+  let maxAbsDiv = 0;
+  for (let l = 0; l < N3; l++) { const v = Math.abs(div[l]); if (v > maxAbsDiv) maxAbsDiv = v; }
+
+  stat.textContent =
+    `step=${stepCount}  N=${N}³  Σ|V|=${totV.toFixed(2)} (target ${targetMass.toFixed(2)})  ` +
+    `Σ|Φ|=${sumPhi.toFixed(2)}  ` +
+    `½∫|∇V|²=${dirich.toFixed(2)}  −∫Φ|V|=${coupling.toFixed(2)}  ` +
+    `max|∇·V|=${maxAbsDiv.toExponential(2)}  ` +
+    (iterating ? `${fps.toFixed(0)} fps` : 'idle');
+}
+
+// ── Loop ────────────────────────────────────────────────────────────
+function tick() {
+  if (!iterating) return;
+  const dt    = parseFloat($('ctlDt').value);
+  const nu    = parseFloat($('ctlNu').value);
+  const g     = parseFloat($('ctlG').value);
+  const damp  = parseFloat($('ctlDamp').value);
+  const divIt = parseInt($('ctlDivIt').value);
+  const potIt = parseInt($('ctlPotIt').value);
+  step(dt, nu, g, damp, divIt, potIt);
+  stepCount++;
+  frames++;
+  const now = performance.now();
+  if (now - lastTime > 500) {
+    fps = frames * 1000 / (now - lastTime);
+    lastTime = now; frames = 0;
+  }
+  render();
+  requestAnimationFrame(tick);
+}
+
+// ── UI hookup ──────────────────────────────────────────────────────
+function bindLabel(id, lblId) {
+  const el = $(id), lbl = $(lblId);
+  const upd = () => { lbl.textContent = el.value; };
+  el.addEventListener('input', upd); upd();
+}
+['ctlN','ctlCell','ctlDt','ctlNu','ctlG','ctlKappa','ctlJitter','ctlDamp',
+ 'ctlDivIt','ctlPotIt','ctlYaw','ctlPitch','ctlSeed','ctlTrace','ctlSlice'
+].forEach(id => bindLabel(id, 'lbl' + id.slice(3)));
+
+$('ctlN').addEventListener('change', e => {
+  alloc(parseInt(e.target.value));
+  randomize();
+  stepCount = 0;
+  render();
+});
+$('ctlCell').addEventListener('input', e => { cell = parseInt(e.target.value); render(); });
+$('ctlLog').addEventListener('change', e => { logBright = e.target.checked; render(); });
+$('ctlYaw').addEventListener('input',   () => draw3DStreamlines($('c3d')));
+$('ctlPitch').addEventListener('input', () => draw3DStreamlines($('c3d')));
+$('ctlSeed').addEventListener('input',  () => draw3DStreamlines($('c3d')));
+$('ctlTrace').addEventListener('input', () => draw3DStreamlines($('c3d')));
+$('ctlAxis').addEventListener('change', () => render());
+$('ctlSlice').addEventListener('input', () => render());
+$('ctlKappa').addEventListener('change', () => {
+  computePotential(parseInt($('ctlPotIt').value));
+  render();
+});
+$('btnRand').addEventListener('click', () => { randomize(); stepCount = 0; render(); });
+$('btnZero').addEventListener('click', () => { zero(); stepCount = 0; render(); });
+$('btnJitter').addEventListener('click', () => {
+  jitter(parseFloat($('ctlJitter').value));
+  projectDivFree(parseInt($('ctlDivIt').value));
+  rescaleMass();
+  computePotential(parseInt($('ctlPotIt').value));
+  render();
+});
+$('btnStep').addEventListener('click', () => {
+  const dt    = parseFloat($('ctlDt').value);
+  const nu    = parseFloat($('ctlNu').value);
+  const g     = parseFloat($('ctlG').value);
+  const damp  = parseFloat($('ctlDamp').value);
+  const divIt = parseInt($('ctlDivIt').value);
+  const potIt = parseInt($('ctlPotIt').value);
+  step(dt, nu, g, damp, divIt, potIt);
+  stepCount++;
+  render();
+});
+const btnIter = $('btnIter');
+btnIter.addEventListener('click', () => {
+  iterating = !iterating;
+  btnIter.classList.toggle('active', iterating);
+  btnIter.textContent = iterating ? 'Stop' : 'Iterate';
+  if (iterating) { lastTime = performance.now(); frames = 0; requestAnimationFrame(tick); }
+});
+
+// drag the 3D canvas to rotate
+(() => {
+  const c = $('c3d');
+  let dragging = false, lastX = 0, lastY = 0;
+  c.addEventListener('mousedown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+  window.addEventListener('mouseup',   () => { dragging = false; });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    const yaw   = $('ctlYaw');
+    const pitch = $('ctlPitch');
+    yaw.value   = String(((parseFloat(yaw.value) + dx*0.5 + 540) % 360) - 180);
+    pitch.value = String(Math.max(-90, Math.min(90, parseFloat(pitch.value) - dy*0.5)));
+    $('lblYaw').textContent   = yaw.value;
+    $('lblPitch').textContent = pitch.value;
+    draw3DStreamlines($('c3d'));
+  });
+})();
+
+// ── Init ───────────────────────────────────────────────────────────
+cell = parseInt($('ctlCell').value);
+alloc(parseInt($('ctlN').value));
+randomize();
+render();
+</script>
+</body>
+</html>
