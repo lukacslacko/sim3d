@@ -180,15 +180,28 @@ void main() {
 }
 `;
 
-// Single Jacobi sweep for ∇²Φ = src.  6Φ_new = Σ neighbours − src.
+// One red-black SOR half-sweep for ∇²Φ = src.
+//   uParity = 0 updates cells with (i+j+k) even, copies the others through;
+//   uParity = 1 updates the odd cells, copying the even ones through.
+//   Two consecutive half-sweeps with opposite parity = one Gauss-Seidel iter.
+//   The Laplacian's 7-point stencil is bipartite (red↔black only), so the
+//   half-sweep is exact GS, and over-relaxing by uOmega ≈ 2/(1+sin π/N)
+//   accelerates convergence from O(N²) to O(N) iters for the slow modes.
 const FS_JACOBI = FS_PRELUDE + `
 uniform sampler2D uPhi;
 uniform sampler2D uSrc;
+uniform float uOmega;
+uniform int   uParity;
 void main() {
   ivec2 px  = ivec2(gl_FragCoord.xy);
   ivec3 ijk = ijkOf(px);
   if (ijk.x >= N) { fragColor = vec4(0.0); return; }
   int i = ijk.x, j = ijk.y, k = ijk.z;
+  float old = texelFetch(uPhi, px, 0).r;
+  if (((i + j + k) & 1) != uParity) {
+    fragColor = vec4(old, 0.0, 0.0, 0.0);
+    return;
+  }
   float s = fetchScalar(uPhi, i+1, j, k)
           + fetchScalar(uPhi, i-1, j, k)
           + fetchScalar(uPhi, i, j+1, k)
@@ -196,7 +209,8 @@ void main() {
           + fetchScalar(uPhi, i, j, k+1)
           + fetchScalar(uPhi, i, j, k-1);
   float src = texelFetch(uSrc, px, 0).r;
-  fragColor = vec4((s - src) / 6.0, 0.0, 0.0, 0.0);
+  float gs  = (s - src) / 6.0;
+  fragColor = vec4(old + uOmega * (gs - old), 0.0, 0.0, 0.0);
 }
 `;
 
@@ -451,9 +465,11 @@ class GPUSim {
     if (uniforms) {
       for (const [name, value] of Object.entries(uniforms)) {
         const loc = gl.getUniformLocation(prog, name);
+        if (loc === null) continue;
         if (typeof value === 'number') gl.uniform1f(loc, value);
         else if (Array.isArray(value)) {
-          if (Number.isInteger(value[0])) gl.uniform2i(loc, value[0], value[1]);
+          if (value.length === 1) gl.uniform1i(loc, value[0]);                // single int
+          else if (Number.isInteger(value[0])) gl.uniform2i(loc, value[0], value[1]);
           else gl.uniform2f(loc, value[0], value[1]);
         }
       }
@@ -470,6 +486,25 @@ class GPUSim {
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
+  }
+
+  // Red-black SOR for ∇²Φ = src on a ping-pong pair.  Each "iter" is a red
+  // sweep followed by a black sweep — bipartite Laplacian → exact Gauss-Seidel,
+  // and the SOR over-relaxation factor is auto-set to the analytical optimum
+  // 2/(1+sin(π/N)).
+  _jacobiSOR(fieldPair, srcTex, iters) {
+    if (iters <= 0) return;
+    const omega = 2.0 / (1.0 + Math.sin(Math.PI / this.N));
+    for (let it = 0; it < iters; it++) {
+      this._runPass('jacobi', fieldPair[1],
+        { uOmega: omega, uParity: [0] },
+        { uPhi: fieldPair[0], uSrc: srcTex });
+      [fieldPair[0], fieldPair[1]] = [fieldPair[1], fieldPair[0]];
+      this._runPass('jacobi', fieldPair[1],
+        { uOmega: omega, uParity: [1] },
+        { uPhi: fieldPair[0], uSrc: srcTex });
+      [fieldPair[0], fieldPair[1]] = [fieldPair[1], fieldPair[0]];
+    }
   }
 
   _reduceSum(srcTex) {
@@ -556,18 +591,12 @@ class GPUSim {
     const sumMag  = this._reduceSum(T.Mag);
     const meanMag = this.boundary === 0 ? sumMag / (this.N * this.N * this.N) : 0;
     this._runPass('src', T.Src, { uKappa: kappa, uMean: meanMag }, { uV: T.V[0] });
-    for (let it = 0; it < potIt; it++) {
-      this._runPass('jacobi', T.Phi[1], {}, { uPhi: T.Phi[0], uSrc: T.Src });
-      [T.Phi[0], T.Phi[1]] = [T.Phi[1], T.Phi[0]];
-    }
+    this._jacobiSOR(T.Phi, T.Src, potIt);
   }
   projectDivFreeOnly(divIt) {
     const T = this.tex;
     this._runPass('div', T.Div, {}, { uV: T.V[0] });
-    for (let it = 0; it < divIt; it++) {
-      this._runPass('jacobi', T.Chi[1], {}, { uPhi: T.Chi[0], uSrc: T.Div });
-      [T.Chi[0], T.Chi[1]] = [T.Chi[1], T.Chi[0]];
-    }
+    this._jacobiSOR(T.Chi, T.Div, divIt);
     this._runPass('gradSub', T.V[1], {}, { uV: T.V[0], uChi: T.Chi[0] });
     [T.V[0], T.V[1]] = [T.V[1], T.V[0]];
   }
@@ -579,16 +608,13 @@ class GPUSim {
     const T = this.tex;
     // 1. |V|
     this._runPass('mag', T.Mag, {}, { uV: T.V[0] });
-    // 2. mean|V|
+    // 2. mean|V| — only subtracted in periodic mode; Dirichlet feeds raw |V|.
     const sumMag  = this._reduceSum(T.Mag);
-    const meanMag = sumMag / (this.N * this.N * this.N);
+    const meanMag = this.boundary === 0 ? sumMag / (this.N * this.N * this.N) : 0;
     // 3. src = -kappa·(|V|-mean)
     this._runPass('src', T.Src, { uKappa: kappa, uMean: meanMag }, { uV: T.V[0] });
-    // 4. Phi Jacobi
-    for (let it = 0; it < potIt; it++) {
-      this._runPass('jacobi', T.Phi[1], {}, { uPhi: T.Phi[0], uSrc: T.Src });
-      [T.Phi[0], T.Phi[1]] = [T.Phi[1], T.Phi[0]];
-    }
+    // 4. Phi via red-black SOR
+    this._jacobiSOR(T.Phi, T.Src, potIt);
     // 5. force
     this._runPass('force', T.Force, { uNu: nu, uG: g }, { uV: T.V[0], uPhi: T.Phi[0] });
     // 6. V += dt·F
@@ -601,11 +627,8 @@ class GPUSim {
     }
     // 8. div(V)
     this._runPass('div', T.Div, {}, { uV: T.V[0] });
-    // 9. χ Jacobi (warm-started in T.Chi[0])
-    for (let it = 0; it < divIt; it++) {
-      this._runPass('jacobi', T.Chi[1], {}, { uPhi: T.Chi[0], uSrc: T.Div });
-      [T.Chi[0], T.Chi[1]] = [T.Chi[1], T.Chi[0]];
-    }
+    // 9. χ via red-black SOR (warm-started in T.Chi[0])
+    this._jacobiSOR(T.Chi, T.Div, divIt);
     // 10. V -= ∇χ
     this._runPass('gradSub', T.V[1], {}, { uV: T.V[0], uChi: T.Chi[0] });
     [T.V[0], T.V[1]] = [T.V[1], T.V[0]];
