@@ -917,21 +917,21 @@ function draw3DStreamlines(canvas) {
       for (let sk = 0; sk < N; sk += stride) {
         let x = sk + 0.5, y = sj + 0.5, z = si + 0.5;
         let [puu, pvv, pdd] = proj(x, y, z);
-        let prevX = x, prevY = y, prevZ = z;
         for (let s = 0; s < nSteps; s++) {
           const [vx, vy, vz] = sampleV3(x, y, z);
           const m = Math.sqrt(vx*vx + vy*vy + vz*vz);
           if (m < 1e-9) break;
-          x += vx * scl; y += vy * scl; z += vz * scl;
-          const dx = x - prevX, dy = y - prevY, dz = z - prevZ;
-          const wrapped = Math.abs(dx) > N/2 || Math.abs(dy) > N/2 || Math.abs(dz) > N/2;
-          x = ((x % N) + N) % N;
-          y = ((y % N) + N) % N;
-          z = ((z % N) + N) % N;
+          // step in the unwrapped frame; if it leaves [0,N) on any axis we crossed
+          // the periodic boundary and the segment from the previous sample to here
+          // would jump across the cube — drop it.
+          const nx = x + vx * scl, ny = y + vy * scl, nz = z + vz * scl;
+          const wrapped = nx < 0 || nx >= N || ny < 0 || ny >= N || nz < 0 || nz >= N;
+          x = ((nx % N) + N) % N;
+          y = ((ny % N) + N) % N;
+          z = ((nz % N) + N) % N;
           const [u, v, d] = proj(x, y, z);
           if (!wrapped) segs.push([puu, pvv, u, v, 0.5*(pdd + d), m / mx]);
           puu = u; pvv = v; pdd = d;
-          prevX = x; prevY = y; prevZ = z;
         }
       }
   segs.sort((a, b) => a[4] - b[4]);
