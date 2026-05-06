@@ -65,7 +65,7 @@ the topology of the initial map.
       <label>jitter amt</label>    <input id="ctlJitter"  type="range" min="0"   max="1"    step="0.01"  value="0.05"><span class="val" id="lblJitter"></span>
       <label>damping</label>       <input id="ctlDamp"    type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
       <label>potential iters</label><input id="ctlPotIt"  type="range" min="0"   max="60"   step="1"     value="20"><span class="val" id="lblPotIt"></span>
-      <label>boundary</label>      <select id="ctlBoundary"><option value="periodic">periodic torus</option><option value="dirichlet">cube (ρ=0, Φ=0 outside; T free)</option></select><span class="val">&nbsp;</span>
+      <label>boundary</label>      <select id="ctlBoundary"><option value="periodic">periodic torus</option><option value="dirichlet">cube (ρ=Φ=0 outside; T = radial-outward from centre)</option></select><span class="val">&nbsp;</span>
       <label>conserve mass</label> <input id="ctlConsv"   type="checkbox" checked><span class="val">&nbsp;</span>
       <label>log brightness</label><input id="ctlLog"     type="checkbox"><span class="val">&nbsp;</span>
       <label>3D yaw°</label>       <input id="ctlYaw"     type="range" min="-180" max="180" step="1"     value="35"><span class="val" id="lblYaw"></span>
@@ -80,9 +80,12 @@ the topology of the initial map.
     </div>
     <div id="status"></div>
     <div class="legend">
-      No <code>∇·V = 0</code> projection in this variant — the constraint did not extend
-      cleanly to the (T, ρ) split.  Mass is conserved if "conserve mass" is on (rescales ρ
-      to its Randomize-time total each step).
+      No <code>∇·V = 0</code> projection in this variant — mass is conserved if "conserve
+      mass" is on (rescales ρ to its Randomize-time total each step).
+      In the cube boundary mode, <code>ρ</code> and <code>Φ</code> are zero outside but
+      <code>T</code> on the ghost cells is the unit radial vector from the cube centre, so
+      stencils at the wall pull <code>T</code> toward radial-outward over time (the cube
+      becomes a "star" with outward time-direction at infinity).
       <b>Shift</b>: <code>shift x/y/z</code> or press <kbd>x/y/z</kbd>
       (<kbd>Shift</kbd>+key reverses).  <b>Refine ×2</b> doubles N and continues.
     </div>
@@ -152,6 +155,22 @@ float fetchScalar(sampler2D tex, int i, int j, int k) {
   if (uBoundary == 1 && outOfBounds(i, j, k)) return 0.0;
   return texelFetch(tex, coordOf(i, j, k), 0).r;
 }
+// Boundary value of the unit time-direction field T in Dirichlet mode: the
+// radial-outward unit vector from the cube centre evaluated at the ghost cell.
+// Inside the cube this falls through to the stored value.
+vec3 radialOutward(int i, int j, int k) {
+  float c = float(N - 1) * 0.5;
+  vec3 p = vec3(float(k), float(j), float(i)) - vec3(c);
+  float len = length(p);
+  if (len < 1e-6) return vec3(1.0, 0.0, 0.0);
+  return p / len;
+}
+vec4 fetchT(sampler2D tex, int i, int j, int k) {
+  if (uBoundary == 1 && outOfBounds(i, j, k)) {
+    return vec4(radialOutward(i, j, k), 0.0);
+  }
+  return texelFetch(tex, coordOf(i, j, k), 0);
+}
 out vec4 fragColor;
 `;
 
@@ -215,12 +234,12 @@ void main() {
   if (ijk.x >= N) { fragColor = vec4(0.0); return; }
   int i = ijk.x, j = ijk.y, k = ijk.z;
   vec3 t_c  = texelFetch(uT, px, 0).xyz;
-  vec3 t_ip = fetchVec(uT, i+1, j, k).xyz;
-  vec3 t_im = fetchVec(uT, i-1, j, k).xyz;
-  vec3 t_jp = fetchVec(uT, i, j+1, k).xyz;
-  vec3 t_jm = fetchVec(uT, i, j-1, k).xyz;
-  vec3 t_kp = fetchVec(uT, i, j, k+1).xyz;
-  vec3 t_km = fetchVec(uT, i, j, k-1).xyz;
+  vec3 t_ip = fetchT(uT, i+1, j, k).xyz;
+  vec3 t_im = fetchT(uT, i-1, j, k).xyz;
+  vec3 t_jp = fetchT(uT, i, j+1, k).xyz;
+  vec3 t_jm = fetchT(uT, i, j-1, k).xyz;
+  vec3 t_kp = fetchT(uT, i, j, k+1).xyz;
+  vec3 t_km = fetchT(uT, i, j, k-1).xyz;
   vec3 lapT = t_ip + t_im + t_jp + t_jm + t_kp + t_km - 6.0 * t_c;
   vec3 dxT  = (t_kp - t_km) * 0.5;     // x ↔ k axis
   vec3 dyT  = (t_jp - t_jm) * 0.5;     // y ↔ j
@@ -261,12 +280,12 @@ void main() {
   float rkp = fetchScalar(uRho, i, j, k+1);
   float rkm = fetchScalar(uRho, i, j, k-1);
   float lapR = rip + rim + rjp + rjm + rkp + rkm - 6.0 * rC;
-  vec3 t_ip = fetchVec(uT, i+1, j, k).xyz;
-  vec3 t_im = fetchVec(uT, i-1, j, k).xyz;
-  vec3 t_jp = fetchVec(uT, i, j+1, k).xyz;
-  vec3 t_jm = fetchVec(uT, i, j-1, k).xyz;
-  vec3 t_kp = fetchVec(uT, i, j, k+1).xyz;
-  vec3 t_km = fetchVec(uT, i, j, k-1).xyz;
+  vec3 t_ip = fetchT(uT, i+1, j, k).xyz;
+  vec3 t_im = fetchT(uT, i-1, j, k).xyz;
+  vec3 t_jp = fetchT(uT, i, j+1, k).xyz;
+  vec3 t_jm = fetchT(uT, i, j-1, k).xyz;
+  vec3 t_kp = fetchT(uT, i, j, k+1).xyz;
+  vec3 t_km = fetchT(uT, i, j, k-1).xyz;
   vec3 dxT  = (t_kp - t_km) * 0.5;
   vec3 dyT  = (t_jp - t_jm) * 0.5;
   vec3 dzT  = (t_ip - t_im) * 0.5;
