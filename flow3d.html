@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>flow3d — sourceless mass-flow with self-gravity (gradient descent on Dirichlet-gravity energy)</title>
+<title>flow3d (GPU) — sourceless mass-flow with self-gravity, WebGL2 compute</title>
 <style>
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0a0a10; color: #e8e8ee; margin: 0; padding: 12px; }
   h1 { font-size: 16px; margin: 0 0 6px 0; color: #ccd; }
@@ -24,25 +24,24 @@
   .vislabel { font-size: 11px; color: #aac; margin-bottom: 4px; }
   #status { font-size: 11px; color: #aac; margin-top: 8px; line-height: 1.5; max-width: 380px; font-variant-numeric: tabular-nums; }
   .legend { font-size: 10px; color: #889; max-width: 380px; line-height: 1.4; margin-top: 8px; }
+  #gpuerr { color: #f88; font-size: 12px; padding: 12px; background: #200; border: 1px solid #500; border-radius: 4px; margin: 12px 0; display: none; }
 </style>
 </head>
 <body>
-<h1>flow3d — sourceless mass-flow with self-gravity</h1>
+<h1>flow3d (GPU) — sourceless mass-flow with self-gravity</h1>
 <p class="lead">
-<b>V</b> is a divergence-free 3D mass-current field on a periodic <code>N×N×N</code> torus
-(direction = local time-arrow, length = mass density). <b>Φ</b> is a scalar gravitational
-potential satisfying <code>∇²Φ = −κ|V|</code> on the torus.
-We do gradient descent on
-<code>E[V,Φ] = ∫ [½|∇V|² − Φ|V| + (1/8πG)|∇Φ|²] d³x</code> subject to <code>∇·V = 0</code>.
-Each step:
-(1) solve <code>∇²Φ = −κ·(|V|−⟨|V|⟩)</code> by Jacobi;
-(2) <code>V ← V + dt·(ν·∇²V + g·Φ·V̂)</code> with regularised <code>V̂ = V/√(|V|²+ε²)</code>;
-(3) Helmholtz-project V to be div-free (<code>∇²χ = ∇·V</code>, <code>V ← V − ∇χ</code>);
-(4) optionally rescale Σ|V| to its Randomize value.
-The Dirichlet term <code>½|∇V|²</code> resists infinite concentration; the <code>−Φ|V|</code>
-term is the gravitational instability that condenses streamlines into channels; <code>∇·V = 0</code>
-plus torus topology keeps streamlines closed.
+Same physics as the CPU version: gradient descent on
+<code>E = ∫ [½|∇V|² − Φ|V| + (1/8πG)|∇Φ|²]</code> subject to <code>∇·V = 0</code>, with
+<code>∇²Φ = −κ|V|</code> on the periodic <code>N³</code> torus.
+All per-cell stencils — the Φ Jacobi sweeps, the force evaluation
+<code>F = ν∇²V + g·Φ·V̂</code>, the addition <code>V ← V + dt·F</code>, the divergence,
+the χ Jacobi sweeps for the Helmholtz projection, the gradient subtract <code>V ← V − ∇χ</code>,
+and the |V| reductions for mean-of-|V| and total mass — run as WebGL2 fragment shaders
+on a 2D atlas (an <code>Nt×Nt</code> grid of <code>N×N</code> slices, <code>Nt = ⌈√N⌉</code>) of
+RGBA32F textures. Only <b>V</b> and <b>Φ</b> are read back to CPU per step, and only for the
+slice / streamline visualisations.
 </p>
+<div id="gpuerr"></div>
 
 <div class="row">
   <div class="panel">
@@ -54,32 +53,31 @@ plus torus topology keeps streamlines closed.
       <button id="btnIter">Iterate</button>
     </div>
     <div class="controls">
-      <label>N (grid)</label>      <input id="ctlN"        type="range" min="8"   max="48"   step="2"     value="16"><span class="val" id="lblN"></span>
-      <label>cell px</label>       <input id="ctlCell"     type="range" min="2"   max="22"   step="1"     value="12"><span class="val" id="lblCell"></span>
-      <label>dt</label>            <input id="ctlDt"       type="range" min="0"   max="0.2"  step="0.001" value="0.020"><span class="val" id="lblDt"></span>
-      <label>ν tension</label>     <input id="ctlNu"       type="range" min="0"   max="3"    step="0.01"  value="1.00"><span class="val" id="lblNu"></span>
-      <label>g gravity</label>     <input id="ctlG"        type="range" min="-2"  max="2"    step="0.01"  value="0.50"><span class="val" id="lblG"></span>
-      <label>κ Φ-source</label>    <input id="ctlKappa"    type="range" min="0"   max="4"    step="0.01"  value="1.00"><span class="val" id="lblKappa"></span>
-      <label>jitter amt</label>    <input id="ctlJitter"   type="range" min="0"   max="1"    step="0.01"  value="0.05"><span class="val" id="lblJitter"></span>
-      <label>damping</label>       <input id="ctlDamp"     type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
-      <label>div-free iters</label><input id="ctlDivIt"    type="range" min="0"   max="40"   step="1"     value="15"><span class="val" id="lblDivIt"></span>
-      <label>potential iters</label><input id="ctlPotIt"   type="range" min="0"   max="40"   step="1"     value="15"><span class="val" id="lblPotIt"></span>
-      <label>conserve mass</label> <input id="ctlConsv"    type="checkbox" checked><span class="val">&nbsp;</span>
-      <label>log brightness</label><input id="ctlLog"      type="checkbox"><span class="val">&nbsp;</span>
-      <label>3D yaw°</label>       <input id="ctlYaw"      type="range" min="-180" max="180" step="1"     value="35"><span class="val" id="lblYaw"></span>
-      <label>3D pitch°</label>     <input id="ctlPitch"    type="range" min="-90"  max="90"  step="1"     value="25"><span class="val" id="lblPitch"></span>
-      <label>seed density</label>  <input id="ctlSeed"     type="range" min="2"   max="14"  step="1"     value="6"><span class="val" id="lblSeed"></span>
-      <label>trace length</label>  <input id="ctlTrace"    type="range" min="5"   max="200" step="1"     value="80"><span class="val" id="lblTrace"></span>
+      <label>N (grid)</label>      <input id="ctlN"       type="range" min="8"   max="64"   step="2"     value="20"><span class="val" id="lblN"></span>
+      <label>cell px</label>       <input id="ctlCell"    type="range" min="2"   max="22"   step="1"     value="10"><span class="val" id="lblCell"></span>
+      <label>dt</label>            <input id="ctlDt"      type="range" min="0"   max="0.2"  step="0.001" value="0.020"><span class="val" id="lblDt"></span>
+      <label>ν tension</label>     <input id="ctlNu"      type="range" min="0"   max="3"    step="0.01"  value="1.00"><span class="val" id="lblNu"></span>
+      <label>g gravity</label>     <input id="ctlG"       type="range" min="-2"  max="2"    step="0.01"  value="0.50"><span class="val" id="lblG"></span>
+      <label>κ Φ-source</label>    <input id="ctlKappa"   type="range" min="0"   max="4"    step="0.01"  value="1.00"><span class="val" id="lblKappa"></span>
+      <label>jitter amt</label>    <input id="ctlJitter"  type="range" min="0"   max="1"    step="0.01"  value="0.05"><span class="val" id="lblJitter"></span>
+      <label>damping</label>       <input id="ctlDamp"    type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
+      <label>div-free iters</label><input id="ctlDivIt"   type="range" min="0"   max="60"   step="1"     value="20"><span class="val" id="lblDivIt"></span>
+      <label>potential iters</label><input id="ctlPotIt"  type="range" min="0"   max="60"   step="1"     value="20"><span class="val" id="lblPotIt"></span>
+      <label>conserve mass</label> <input id="ctlConsv"   type="checkbox" checked><span class="val">&nbsp;</span>
+      <label>log brightness</label><input id="ctlLog"     type="checkbox"><span class="val">&nbsp;</span>
+      <label>3D yaw°</label>       <input id="ctlYaw"     type="range" min="-180" max="180" step="1"     value="35"><span class="val" id="lblYaw"></span>
+      <label>3D pitch°</label>     <input id="ctlPitch"   type="range" min="-90"  max="90"  step="1"     value="25"><span class="val" id="lblPitch"></span>
+      <label>seed density</label>  <input id="ctlSeed"    type="range" min="2"   max="14"  step="1"     value="6"><span class="val" id="lblSeed"></span>
+      <label>trace length</label>  <input id="ctlTrace"   type="range" min="5"   max="200" step="1"     value="80"><span class="val" id="lblTrace"></span>
       <label>slice axis</label>    <select id="ctlAxis"><option value="XY">XY (z fixed)</option><option value="YZ">YZ (x fixed)</option><option value="XZ">XZ (y fixed)</option></select><span class="val">&nbsp;</span>
-      <label>slice index</label>   <input id="ctlSlice"    type="range" min="0"   max="47"  step="1"     value="8"><span class="val" id="lblSlice"></span>
+      <label>slice index</label>   <input id="ctlSlice"   type="range" min="0"   max="63"  step="1"     value="10"><span class="val" id="lblSlice"></span>
     </div>
     <div id="status"></div>
     <div class="legend">
-      Try increasing <b>g</b> (or making it negative) and watch streamlines bunch up. Higher κ
-      sharpens Φ for a given mass distribution. Step size dt should scale roughly as 1/N²
-      because Φ scales like |V|·N²; if the energy / Σ|V| grows or oscillates, lower dt.
-      Direction colour map for slice: x ↔ red, y ↔ green, z ↔ blue (each component biases the
-      colour from gray toward the axis colour).
+      Higher N stays smooth on the GPU; on a discrete laptop GPU N=64 keeps interactive rates.
+      All Jacobi sweeps and stencils are vectorised in fragment shaders; the only round-trip is
+      a single 1×1 readback per reduction (mean of |V|, total mass) plus per-frame V,Φ readback
+      for visualisation.
     </div>
   </div>
   <div class="panel">
@@ -92,29 +90,531 @@ plus torus topology keeps streamlines closed.
   <div class="panel"><div class="vislabel">V slice — direction (RGB) × |V|</div><canvas id="cVSlice"></canvas></div>
   <div class="panel"><div class="vislabel">|V| heatmap</div><canvas id="cVMag"></canvas></div>
   <div class="panel"><div class="vislabel">Φ (red=+, blue=−)</div><canvas id="cPhi"></canvas></div>
-  <div class="panel"><div class="vislabel">−Φ·|V| (energy density of coupling)</div><canvas id="cEnerg"></canvas></div>
+  <div class="panel"><div class="vislabel">−Φ·|V| (coupling-energy density)</div><canvas id="cEnerg"></canvas></div>
   <div class="panel"><div class="vislabel">∇·V residual (signed)</div><canvas id="cDiv"></canvas></div>
 </div>
 
 <script>
 'use strict';
 
-// ── State ────────────────────────────────────────────────────────────
-let N = 16;
-let cell = 12;
-let V, Phi, chi;
-let targetMass = 0;
-let logBright = false;
-let stepCount = 0;
-let iterating = false;
-let lastTime = performance.now();
-let frames = 0;
-let fps = 0;
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║  GPU shaders                                                       ║
+// ╚════════════════════════════════════════════════════════════════════╝
 
-const $ = id => document.getElementById(id);
+const VS_QUAD = `#version 300 es
+in vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+// Common header:  3D ↔ 2D atlas mapping helpers.
+// Atlas is Nt×Nt grid of N×N tiles; slice i lives in tile (i/Nt, i%Nt).
+// ijkOf reverses; coordOf wraps modulo N for periodic stencils.
+const FS_PRELUDE = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform int N;
+uniform int Nt;
+ivec2 coordOf(int i, int j, int k) {
+  i = ((i % N) + N) % N;
+  j = ((j % N) + N) % N;
+  k = ((k % N) + N) % N;
+  int ti = i / Nt;
+  int tj = i - ti * Nt;
+  return ivec2(tj * N + k, ti * N + j);
+}
+ivec3 ijkOf(ivec2 px) {
+  int ti = px.y / N;
+  int tj = px.x / N;
+  int i  = ti * Nt + tj;
+  int j  = px.y - ti * N;
+  int k  = px.x - tj * N;
+  return ivec3(i, j, k);
+}
+out vec4 fragColor;
+`;
+
+const FS_MAG = FS_PRELUDE + `
+uniform sampler2D uV;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  vec3 v = texelFetch(uV, px, 0).xyz;
+  fragColor = vec4(length(v), 0.0, 0.0, 0.0);
+}
+`;
+
+const FS_SRC = FS_PRELUDE + `
+uniform sampler2D uV;
+uniform float uKappa;
+uniform float uMean;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  vec3 v = texelFetch(uV, px, 0).xyz;
+  float m = length(v);
+  fragColor = vec4(-uKappa * (m - uMean), 0.0, 0.0, 0.0);
+}
+`;
+
+// Single Jacobi sweep for ∇²Φ = src.  6Φ_new = Σ neighbours − src.
+const FS_JACOBI = FS_PRELUDE + `
+uniform sampler2D uPhi;
+uniform sampler2D uSrc;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  int i = ijk.x, j = ijk.y, k = ijk.z;
+  float s = texelFetch(uPhi, coordOf(i+1, j, k), 0).r
+          + texelFetch(uPhi, coordOf(i-1, j, k), 0).r
+          + texelFetch(uPhi, coordOf(i, j+1, k), 0).r
+          + texelFetch(uPhi, coordOf(i, j-1, k), 0).r
+          + texelFetch(uPhi, coordOf(i, j, k+1), 0).r
+          + texelFetch(uPhi, coordOf(i, j, k-1), 0).r;
+  float src = texelFetch(uSrc, px, 0).r;
+  fragColor = vec4((s - src) / 6.0, 0.0, 0.0, 0.0);
+}
+`;
+
+const FS_FORCE = FS_PRELUDE + `
+uniform sampler2D uV;
+uniform sampler2D uPhi;
+uniform float uNu;
+uniform float uG;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  int i = ijk.x, j = ijk.y, k = ijk.z;
+  vec3 v_c = texelFetch(uV, px, 0).xyz;
+  vec3 lap = texelFetch(uV, coordOf(i+1, j, k), 0).xyz
+           + texelFetch(uV, coordOf(i-1, j, k), 0).xyz
+           + texelFetch(uV, coordOf(i, j+1, k), 0).xyz
+           + texelFetch(uV, coordOf(i, j-1, k), 0).xyz
+           + texelFetch(uV, coordOf(i, j, k+1), 0).xyz
+           + texelFetch(uV, coordOf(i, j, k-1), 0).xyz
+           - 6.0 * v_c;
+  float phi = texelFetch(uPhi, px, 0).r;
+  float inv = inversesqrt(dot(v_c, v_c) + 1e-6);
+  vec3 F = uNu * lap + (uG * phi * inv) * v_c;
+  fragColor = vec4(F, 0.0);
+}
+`;
+
+const FS_ADDSCALED = FS_PRELUDE + `
+uniform sampler2D uV;
+uniform sampler2D uF;
+uniform float uDt;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  vec3 v = texelFetch(uV, px, 0).xyz;
+  vec3 f = texelFetch(uF, px, 0).xyz;
+  fragColor = vec4(v + uDt * f, 0.0);
+}
+`;
+
+const FS_SCALE = FS_PRELUDE + `
+uniform sampler2D uV;
+uniform float uFactor;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  vec3 v = texelFetch(uV, px, 0).xyz;
+  fragColor = vec4(v * uFactor, 0.0);
+}
+`;
+
+const FS_DIV = FS_PRELUDE + `
+uniform sampler2D uV;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  int i = ijk.x, j = ijk.y, k = ijk.z;
+  vec3 vC  = texelFetch(uV, px, 0).xyz;
+  vec3 vKm = texelFetch(uV, coordOf(i, j, k-1), 0).xyz;
+  vec3 vJm = texelFetch(uV, coordOf(i, j-1, k), 0).xyz;
+  vec3 vIm = texelFetch(uV, coordOf(i-1, j, k), 0).xyz;
+  float d = (vC.x - vKm.x) + (vC.y - vJm.y) + (vC.z - vIm.z);
+  fragColor = vec4(d, 0.0, 0.0, 0.0);
+}
+`;
+
+const FS_GRADSUB = FS_PRELUDE + `
+uniform sampler2D uV;
+uniform sampler2D uChi;
+void main() {
+  ivec2 px  = ivec2(gl_FragCoord.xy);
+  ivec3 ijk = ijkOf(px);
+  if (ijk.x >= N) { fragColor = vec4(0.0); return; }
+  int i = ijk.x, j = ijk.y, k = ijk.z;
+  vec3 v   = texelFetch(uV, px, 0).xyz;
+  float c  = texelFetch(uChi, px, 0).r;
+  float cIp = texelFetch(uChi, coordOf(i+1, j, k), 0).r;
+  float cJp = texelFetch(uChi, coordOf(i, j+1, k), 0).r;
+  float cKp = texelFetch(uChi, coordOf(i, j, k+1), 0).r;
+  fragColor = vec4(v.x - (cKp - c), v.y - (cJp - c), v.z - (cIp - c), 0.0);
+}
+`;
+
+// 2×2 box sum reduce.  uPrev = previous level's W,H so out-of-bounds is dropped.
+const FS_REDUCE = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D uIn;
+uniform ivec2 uPrev;
+out vec4 fragColor;
+void main() {
+  ivec2 d = ivec2(gl_FragCoord.xy);
+  ivec2 s = d * 2;
+  vec4 sum = vec4(0.0);
+  for (int dy = 0; dy < 2; dy++) {
+    for (int dx = 0; dx < 2; dx++) {
+      ivec2 p = s + ivec2(dx, dy);
+      if (p.x < uPrev.x && p.y < uPrev.y) sum += texelFetch(uIn, p, 0);
+    }
+  }
+  fragColor = sum;
+}
+`;
+
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║  GPU sim class                                                     ║
+// ╚════════════════════════════════════════════════════════════════════╝
+
+class GPUSim {
+  constructor() {
+    this.canvas = document.createElement('canvas');
+    this.gl = this.canvas.getContext('webgl2', { antialias: false, depth: false, premultipliedAlpha: false });
+    if (!this.gl) throw new Error('WebGL2 is not available in this browser.');
+    if (!this.gl.getExtension('EXT_color_buffer_float'))
+      throw new Error('EXT_color_buffer_float (float render targets) is not available.');
+    this.gl.disable(this.gl.DEPTH_TEST);
+    this._initVAO();
+    this._initPrograms();
+    this.fbo = this.gl.createFramebuffer();
+    this.tex = null;
+    this.reduceChain = null;
+    this.N = -1;
+    this._readbackBuf = null;
+  }
+  _initVAO() {
+    const gl = this.gl;
+    this.vao = gl.createVertexArray();
+    gl.bindVertexArray(this.vao);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+  }
+  _compile(vsrc, fsrc) {
+    const gl = this.gl;
+    const compile = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+        throw new Error('shader: ' + gl.getShaderInfoLog(s) + '\n' + src);
+      return s;
+    };
+    const vs = compile(gl.VERTEX_SHADER, vsrc);
+    const fs = compile(gl.FRAGMENT_SHADER, fsrc);
+    const p = gl.createProgram();
+    gl.attachShader(p, vs);
+    gl.attachShader(p, fs);
+    gl.bindAttribLocation(p, 0, 'aPos');
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+      throw new Error('program: ' + gl.getProgramInfoLog(p));
+    gl.deleteShader(vs); gl.deleteShader(fs);
+    return p;
+  }
+  _initPrograms() {
+    this.programs = {
+      mag:       this._compile(VS_QUAD, FS_MAG),
+      src:       this._compile(VS_QUAD, FS_SRC),
+      jacobi:    this._compile(VS_QUAD, FS_JACOBI),
+      force:     this._compile(VS_QUAD, FS_FORCE),
+      addScaled: this._compile(VS_QUAD, FS_ADDSCALED),
+      scale:     this._compile(VS_QUAD, FS_SCALE),
+      div:       this._compile(VS_QUAD, FS_DIV),
+      gradSub:   this._compile(VS_QUAD, FS_GRADSUB),
+      reduce:    this._compile(VS_QUAD, FS_REDUCE),
+    };
+  }
+  _mkTex(w, h) {
+    const gl = this.gl;
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  }
+  _clearTex(tex) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.clearBufferfv(gl.COLOR, 0, [0,0,0,0]);
+  }
+
+  setN(N) {
+    this.N  = N;
+    this.Nt = Math.ceil(Math.sqrt(N));
+    this.W  = this.Nt * N;
+    this.canvas.width = this.W;
+    this.canvas.height = this.W;
+
+    const gl = this.gl;
+    if (this.tex) {
+      for (const t of Object.values(this.tex)) {
+        if (Array.isArray(t)) t.forEach(x => gl.deleteTexture(x));
+        else gl.deleteTexture(t);
+      }
+    }
+    if (this.reduceChain) for (const r of this.reduceChain) gl.deleteTexture(r.tex);
+
+    this.tex = {
+      V:     [this._mkTex(this.W, this.W), this._mkTex(this.W, this.W)],
+      Phi:   [this._mkTex(this.W, this.W), this._mkTex(this.W, this.W)],
+      Chi:   [this._mkTex(this.W, this.W), this._mkTex(this.W, this.W)],
+      Mag:    this._mkTex(this.W, this.W),
+      Src:    this._mkTex(this.W, this.W),
+      Div:    this._mkTex(this.W, this.W),
+      Force:  this._mkTex(this.W, this.W),
+    };
+    for (const t of [...this.tex.V, ...this.tex.Phi, ...this.tex.Chi,
+                     this.tex.Mag, this.tex.Src, this.tex.Div, this.tex.Force]) {
+      this._clearTex(t);
+    }
+    // reduction chain (level 0 is W×W, output 1×1)
+    this.reduceChain = [];
+    let w = this.W, h = this.W;
+    while (w > 1 || h > 1) {
+      w = Math.max(1, Math.ceil(w/2));
+      h = Math.max(1, Math.ceil(h/2));
+      this.reduceChain.push({ tex: this._mkTex(w, h), w, h });
+    }
+    this._readbackBuf = new Float32Array(this.W * this.W * 4);
+  }
+
+  _runPass(progName, target, uniforms, samplers) {
+    const gl = this.gl;
+    const prog = this.programs[progName];
+    gl.useProgram(prog);
+
+    const targetTex = (target && target.tex) ? target.tex : target;
+    const targetW   = (target && target.w)   ? target.w   : this.W;
+    const targetH   = (target && target.h)   ? target.h   : this.W;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTex, 0);
+    gl.viewport(0, 0, targetW, targetH);
+
+    gl.uniform1i(gl.getUniformLocation(prog, 'N'), this.N);
+    gl.uniform1i(gl.getUniformLocation(prog, 'Nt'), this.Nt);
+    if (uniforms) {
+      for (const [name, value] of Object.entries(uniforms)) {
+        const loc = gl.getUniformLocation(prog, name);
+        if (typeof value === 'number') gl.uniform1f(loc, value);
+        else if (Array.isArray(value)) {
+          if (Number.isInteger(value[0])) gl.uniform2i(loc, value[0], value[1]);
+          else gl.uniform2f(loc, value[0], value[1]);
+        }
+      }
+    }
+    if (samplers) {
+      let unit = 0;
+      for (const [name, tex] of Object.entries(samplers)) {
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.uniform1i(gl.getUniformLocation(prog, name), unit);
+        unit++;
+      }
+    }
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+  }
+
+  _reduceSum(srcTex) {
+    let cur = { tex: srcTex, w: this.W, h: this.W };
+    for (const next of this.reduceChain) {
+      this._runPass('reduce', next, { uPrev: [cur.w, cur.h] }, { uIn: cur.tex });
+      cur = next;
+    }
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, cur.tex, 0);
+    const buf = new Float32Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, buf);
+    return buf[0];
+  }
+
+  uploadV(V_cpu) {
+    const N = this.N, Nt = this.Nt, W = this.W;
+    const atlas = new Float32Array(W * W * 4);
+    for (let i = 0; i < N; i++) {
+      const ti = (i / Nt) | 0, tj = i - ti * Nt;
+      for (let j = 0; j < N; j++) {
+        for (let k = 0; k < N; k++) {
+          const px  = tj * N + k, py = ti * N + j;
+          const dst = 4 * (py * W + px), src = 3 * ((i*N + j)*N + k);
+          atlas[dst]   = V_cpu[src];
+          atlas[dst+1] = V_cpu[src+1];
+          atlas[dst+2] = V_cpu[src+2];
+          atlas[dst+3] = 0;
+        }
+      }
+    }
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tex.V[0]);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, W, W, gl.RGBA, gl.FLOAT, atlas);
+  }
+  _readTexAtlas(tex) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.readPixels(0, 0, this.W, this.W, gl.RGBA, gl.FLOAT, this._readbackBuf);
+    return this._readbackBuf;
+  }
+  downloadV(V_cpu) {
+    const N = this.N, Nt = this.Nt, W = this.W;
+    const atlas = this._readTexAtlas(this.tex.V[0]);
+    for (let i = 0; i < N; i++) {
+      const ti = (i / Nt) | 0, tj = i - ti * Nt;
+      for (let j = 0; j < N; j++) {
+        for (let k = 0; k < N; k++) {
+          const px = tj * N + k, py = ti * N + j;
+          const src = 4 * (py * W + px), dst = 3 * ((i*N + j)*N + k);
+          V_cpu[dst]   = atlas[src];
+          V_cpu[dst+1] = atlas[src+1];
+          V_cpu[dst+2] = atlas[src+2];
+        }
+      }
+    }
+  }
+  downloadPhi(Phi_cpu) {
+    const N = this.N, Nt = this.Nt, W = this.W;
+    const atlas = this._readTexAtlas(this.tex.Phi[0]);
+    for (let i = 0; i < N; i++) {
+      const ti = (i / Nt) | 0, tj = i - ti * Nt;
+      for (let j = 0; j < N; j++) {
+        for (let k = 0; k < N; k++) {
+          const px = tj * N + k, py = ti * N + j;
+          const src = 4 * (py * W + px), dst = (i*N + j)*N + k;
+          Phi_cpu[dst] = atlas[src];
+        }
+      }
+    }
+  }
+
+  totalMass() {
+    this._runPass('mag', this.tex.Mag, {}, { uV: this.tex.V[0] });
+    return this._reduceSum(this.tex.Mag);
+  }
+  computePotentialOnly(potIt, kappa) {
+    const T = this.tex;
+    this._runPass('mag', T.Mag, {}, { uV: T.V[0] });
+    const sumMag = this._reduceSum(T.Mag);
+    const meanMag = sumMag / (this.N * this.N * this.N);
+    this._runPass('src', T.Src, { uKappa: kappa, uMean: meanMag }, { uV: T.V[0] });
+    for (let it = 0; it < potIt; it++) {
+      this._runPass('jacobi', T.Phi[1], {}, { uPhi: T.Phi[0], uSrc: T.Src });
+      [T.Phi[0], T.Phi[1]] = [T.Phi[1], T.Phi[0]];
+    }
+  }
+  projectDivFreeOnly(divIt) {
+    const T = this.tex;
+    this._runPass('div', T.Div, {}, { uV: T.V[0] });
+    for (let it = 0; it < divIt; it++) {
+      this._runPass('jacobi', T.Chi[1], {}, { uPhi: T.Chi[0], uSrc: T.Div });
+      [T.Chi[0], T.Chi[1]] = [T.Chi[1], T.Chi[0]];
+    }
+    this._runPass('gradSub', T.V[1], {}, { uV: T.V[0], uChi: T.Chi[0] });
+    [T.V[0], T.V[1]] = [T.V[1], T.V[0]];
+  }
+  resetAux() {
+    for (const t of [...this.tex.Phi, ...this.tex.Chi]) this._clearTex(t);
+  }
+
+  step(dt, nu, g, kappa, dampK, divIt, potIt, conserveMass, targetMass) {
+    const T = this.tex;
+    // 1. |V|
+    this._runPass('mag', T.Mag, {}, { uV: T.V[0] });
+    // 2. mean|V|
+    const sumMag  = this._reduceSum(T.Mag);
+    const meanMag = sumMag / (this.N * this.N * this.N);
+    // 3. src = -kappa·(|V|-mean)
+    this._runPass('src', T.Src, { uKappa: kappa, uMean: meanMag }, { uV: T.V[0] });
+    // 4. Phi Jacobi
+    for (let it = 0; it < potIt; it++) {
+      this._runPass('jacobi', T.Phi[1], {}, { uPhi: T.Phi[0], uSrc: T.Src });
+      [T.Phi[0], T.Phi[1]] = [T.Phi[1], T.Phi[0]];
+    }
+    // 5. force
+    this._runPass('force', T.Force, { uNu: nu, uG: g }, { uV: T.V[0], uPhi: T.Phi[0] });
+    // 6. V += dt·F
+    this._runPass('addScaled', T.V[1], { uDt: dt }, { uV: T.V[0], uF: T.Force });
+    [T.V[0], T.V[1]] = [T.V[1], T.V[0]];
+    // 7. damp
+    if (dampK > 0) {
+      this._runPass('scale', T.V[1], { uFactor: 1 - dampK }, { uV: T.V[0] });
+      [T.V[0], T.V[1]] = [T.V[1], T.V[0]];
+    }
+    // 8. div(V)
+    this._runPass('div', T.Div, {}, { uV: T.V[0] });
+    // 9. χ Jacobi (warm-started in T.Chi[0])
+    for (let it = 0; it < divIt; it++) {
+      this._runPass('jacobi', T.Chi[1], {}, { uPhi: T.Chi[0], uSrc: T.Div });
+      [T.Chi[0], T.Chi[1]] = [T.Chi[1], T.Chi[0]];
+    }
+    // 10. V -= ∇χ
+    this._runPass('gradSub', T.V[1], {}, { uV: T.V[0], uChi: T.Chi[0] });
+    [T.V[0], T.V[1]] = [T.V[1], T.V[0]];
+    // 11. rescale
+    if (conserveMass && targetMass > 0) {
+      this._runPass('mag', T.Mag, {}, { uV: T.V[0] });
+      const newSum = this._reduceSum(T.Mag);
+      if (newSum > 1e-9) {
+        const f = targetMass / newSum;
+        this._runPass('scale', T.V[1], { uFactor: f }, { uV: T.V[0] });
+        [T.V[0], T.V[1]] = [T.V[1], T.V[0]];
+      }
+    }
+  }
+}
+
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║  CPU-side state and visualisation                                  ║
+// ╚════════════════════════════════════════════════════════════════════╝
+
+let N         = 20;
+let cell      = 10;
+let V, Phi;                       // CPU mirrors used only for visualisation
+let targetMass = 0;
+let logBright  = false;
+let stepCount  = 0;
+let iterating  = false;
+let lastTime   = performance.now();
+let frames     = 0;
+let fps        = 0;
+let gpu        = null;
+
+const $    = id => document.getElementById(id);
 const stat = $('status');
 
-// (i, j, k) where i ↔ z, j ↔ y, k ↔ x.  Vector layout V[3*idx + c], c ∈ {0:x,1:y,2:z}.
 function vIdx(i, j, k) { return 3*((i*N + j)*N + k); }
 function sIdx(i, j, k) { return (i*N + j)*N + k; }
 
@@ -123,7 +623,7 @@ function alloc(n) {
   const N3 = N*N*N;
   V    = new Float32Array(3*N3);
   Phi  = new Float32Array(N3);
-  chi  = new Float32Array(N3);
+  gpu.setN(N);
   const slice = $('ctlSlice');
   slice.max   = N - 1;
   if (parseInt(slice.value) > N - 1) slice.value = (N - 1) >> 1;
@@ -133,173 +633,59 @@ function alloc(n) {
 function totalMass() {
   let s = 0;
   const L = 3*N*N*N;
-  for (let l = 0; l < L; l += 3) {
-    s += Math.sqrt(V[l]*V[l] + V[l+1]*V[l+1] + V[l+2]*V[l+2]);
-  }
+  for (let l = 0; l < L; l += 3) s += Math.sqrt(V[l]*V[l] + V[l+1]*V[l+1] + V[l+2]*V[l+2]);
   return s;
-}
-
-function rescaleMass() {
-  if (!$('ctlConsv').checked) return;
-  const cur = totalMass();
-  if (cur < 1e-9 || targetMass < 1e-9) return;
-  const f = targetMass / cur;
-  const L = 3*N*N*N;
-  for (let l = 0; l < L; l++) V[l] *= f;
 }
 
 function randomize() {
   const L = 3*N*N*N;
   for (let l = 0; l < L; l++) V[l] = (Math.random()*2 - 1);
-  Phi.fill(0); chi.fill(0);
-  projectDivFree(40);
+  gpu.resetAux();
+  gpu.uploadV(V);
+  gpu.projectDivFreeOnly(60);
+  gpu.computePotentialOnly(60, parseFloat($('ctlKappa').value));
+  gpu.downloadV(V);
+  gpu.downloadPhi(Phi);
   targetMass = totalMass();
-  computePotential(40);
 }
 
-function zero()   { V.fill(0); Phi.fill(0); chi.fill(0); targetMass = 0; }
+function zero() {
+  V.fill(0); Phi.fill(0);
+  gpu.uploadV(V);
+  gpu.resetAux();
+  targetMass = 0;
+}
+
 function jitter(amt) {
   const L = 3*N*N*N;
   for (let l = 0; l < L; l++) V[l] += (Math.random()*2 - 1) * amt;
-}
-
-// ── Operators ────────────────────────────────────────────────────────
-function computeDivInto(out) {
-  for (let i = 0; i < N; i++) {
-    const im = (i-1+N)%N;
-    for (let j = 0; j < N; j++) {
-      const jm = (j-1+N)%N;
-      for (let k = 0; k < N; k++) {
-        const km = (k-1+N)%N;
-        const v = vIdx(i,j,k);
-        const dx = V[v]   - V[vIdx(i,j,km)];
-        const dy = V[v+1] - V[vIdx(i,jm,k)+1];
-        const dz = V[v+2] - V[vIdx(im,j,k)+2];
-        out[sIdx(i,j,k)] = dx + dy + dz;
-      }
+  gpu.uploadV(V);
+  gpu.projectDivFreeOnly(parseInt($('ctlDivIt').value));
+  if ($('ctlConsv').checked && targetMass > 0) {
+    const cur = gpu.totalMass();
+    if (cur > 1e-9) {
+      const f = targetMass / cur;
+      gpu._runPass('scale', gpu.tex.V[1], { uFactor: f }, { uV: gpu.tex.V[0] });
+      [gpu.tex.V[0], gpu.tex.V[1]] = [gpu.tex.V[1], gpu.tex.V[0]];
     }
   }
+  gpu.computePotentialOnly(parseInt($('ctlPotIt').value), parseFloat($('ctlKappa').value));
+  gpu.downloadV(V);
+  gpu.downloadPhi(Phi);
 }
 
-function projectDivFree(iters) {
-  const N3  = N*N*N;
-  const div = new Float32Array(N3);
-  computeDivInto(div);
-  let s = 0; for (let l = 0; l < N3; l++) s += div[l];
-  const m = s / N3;
-  for (let l = 0; l < N3; l++) div[l] -= m;
-  const tmp = new Float32Array(N3);
-  for (let it = 0; it < iters; it++) {
-    for (let i = 0; i < N; i++) {
-      const ip = (i+1)%N, im = (i-1+N)%N;
-      for (let j = 0; j < N; j++) {
-        const jp = (j+1)%N, jm = (j-1+N)%N;
-        for (let k = 0; k < N; k++) {
-          const kp = (k+1)%N, km = (k-1+N)%N;
-          const sum = chi[sIdx(ip,j,k)] + chi[sIdx(im,j,k)]
-                    + chi[sIdx(i,jp,k)] + chi[sIdx(i,jm,k)]
-                    + chi[sIdx(i,j,kp)] + chi[sIdx(i,j,km)];
-          tmp[sIdx(i,j,k)] = (sum - div[sIdx(i,j,k)]) / 6;
-        }
-      }
-    }
-    chi.set(tmp);
-  }
-  for (let i = 0; i < N; i++) {
-    const ip = (i+1)%N;
-    for (let j = 0; j < N; j++) {
-      const jp = (j+1)%N;
-      for (let k = 0; k < N; k++) {
-        const kp = (k+1)%N;
-        const c  = chi[sIdx(i,j,k)];
-        const gx = chi[sIdx(i,j,kp)] - c;
-        const gy = chi[sIdx(i,jp,k)] - c;
-        const gz = chi[sIdx(ip,j,k)] - c;
-        const v  = vIdx(i,j,k);
-        V[v]   -= gx;
-        V[v+1] -= gy;
-        V[v+2] -= gz;
-      }
-    }
-  }
-}
-
-// Solve ∇²Φ = −κ·(|V|−⟨|V|⟩) by Jacobi (warm-started Φ).
-function computePotential(iters) {
+function step() {
+  const dt    = parseFloat($('ctlDt').value);
+  const nu    = parseFloat($('ctlNu').value);
+  const g     = parseFloat($('ctlG').value);
   const kappa = parseFloat($('ctlKappa').value);
-  const N3 = N*N*N;
-  const src = new Float32Array(N3);
-  let total = 0;
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
-      for (let k = 0; k < N; k++) {
-        const v = vIdx(i,j,k);
-        const m = Math.sqrt(V[v]*V[v] + V[v+1]*V[v+1] + V[v+2]*V[v+2]);
-        const s = -kappa * m;
-        src[sIdx(i,j,k)] = s;
-        total += s;
-      }
-    }
-  }
-  const mean = total / N3;
-  for (let l = 0; l < N3; l++) src[l] -= mean;
-  // 5-point Jacobi: 6Φ = sum_neighbours − src ⇒ Φ_new = (sum − src)/6
-  const tmp = new Float32Array(N3);
-  for (let it = 0; it < iters; it++) {
-    for (let i = 0; i < N; i++) {
-      const ip = (i+1)%N, im = (i-1+N)%N;
-      for (let j = 0; j < N; j++) {
-        const jp = (j+1)%N, jm = (j-1+N)%N;
-        for (let k = 0; k < N; k++) {
-          const kp = (k+1)%N, km = (k-1+N)%N;
-          const sum = Phi[sIdx(ip,j,k)] + Phi[sIdx(im,j,k)]
-                    + Phi[sIdx(i,jp,k)] + Phi[sIdx(i,jm,k)]
-                    + Phi[sIdx(i,j,kp)] + Phi[sIdx(i,j,km)];
-          tmp[sIdx(i,j,k)] = (sum - src[sIdx(i,j,k)]) / 6;
-        }
-      }
-    }
-    Phi.set(tmp);
-  }
-}
-
-// Force: F = ν·∇²V + g·Φ·V̂   with V̂ = V / √(|V|² + ε²).
-// Computed into a buffer, then applied to V (so the Laplacian uses old neighbours).
-function step(dt, nu, gravG, dampK, divIt, potIt) {
-  computePotential(potIt);
-  const eps2 = 1e-6;
-  const L    = 3*N*N*N;
-  const F    = new Float32Array(L);
-  for (let i = 0; i < N; i++) {
-    const ip = (i+1)%N, im = (i-1+N)%N;
-    for (let j = 0; j < N; j++) {
-      const jp = (j+1)%N, jm = (j-1+N)%N;
-      for (let k = 0; k < N; k++) {
-        const kp = (k+1)%N, km = (k-1+N)%N;
-        const v   = vIdx(i,j,k);
-        const ipv = vIdx(ip,j,k), imv = vIdx(im,j,k);
-        const jpv = vIdx(i,jp,k), jmv = vIdx(i,jm,k);
-        const kpv = vIdx(i,j,kp), kmv = vIdx(i,j,km);
-        const Vx = V[v], Vy = V[v+1], Vz = V[v+2];
-        const phi = Phi[sIdx(i,j,k)];
-        const inv = 1 / Math.sqrt(Vx*Vx + Vy*Vy + Vz*Vz + eps2);
-        const lapX = V[ipv]   + V[imv]   + V[jpv]   + V[jmv]   + V[kpv]   + V[kmv]   - 6*Vx;
-        const lapY = V[ipv+1] + V[imv+1] + V[jpv+1] + V[jmv+1] + V[kpv+1] + V[kmv+1] - 6*Vy;
-        const lapZ = V[ipv+2] + V[imv+2] + V[jpv+2] + V[jmv+2] + V[kpv+2] + V[kmv+2] - 6*Vz;
-        const gp   = gravG * phi * inv;
-        F[v]   = nu * lapX + gp * Vx;
-        F[v+1] = nu * lapY + gp * Vy;
-        F[v+2] = nu * lapZ + gp * Vz;
-      }
-    }
-  }
-  for (let l = 0; l < L; l++) V[l] += dt * F[l];
-  if (dampK > 0) {
-    const f = 1 - dampK;
-    for (let l = 0; l < L; l++) V[l] *= f;
-  }
-  projectDivFree(divIt);
-  rescaleMass();
+  const damp  = parseFloat($('ctlDamp').value);
+  const divIt = parseInt($('ctlDivIt').value);
+  const potIt = parseInt($('ctlPotIt').value);
+  const consv = $('ctlConsv').checked;
+  gpu.step(dt, nu, g, kappa, damp, divIt, potIt, consv, targetMass);
+  gpu.downloadV(V);
+  gpu.downloadPhi(Phi);
 }
 
 // ── Drawing helpers ──────────────────────────────────────────────────
@@ -308,7 +694,6 @@ function nrm(v, mx) {
   if (logBright) return Math.log1p(9*r) / Math.log(10);
   return Math.min(1, r);
 }
-
 function maxVecMag3() {
   let mx = 1e-9;
   const L = 3*N*N*N;
@@ -318,26 +703,25 @@ function maxVecMag3() {
   }
   return Math.sqrt(mx);
 }
-
 function sliceVec(F, axis, idx) {
   const out = new Float32Array(3*N*N);
   if (axis === 'XY') {
     const i = idx;
     for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) {
       const v = vIdx(i,j,k); const o = 3*(j*N+k);
-      out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+      out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
     }
   } else if (axis === 'YZ') {
     const k = idx;
     for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
       const v = vIdx(i,j,k); const o = 3*(i*N+j);
-      out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+      out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
     }
   } else {
     const j = idx;
     for (let i = 0; i < N; i++) for (let k = 0; k < N; k++) {
       const v = vIdx(i,j,k); const o = 3*(i*N+k);
-      out[o] = F[v]; out[o+1] = F[v+1]; out[o+2] = F[v+2];
+      out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
     }
   }
   return out;
@@ -356,13 +740,11 @@ function sliceScalar(F, axis, idx) {
   }
   return out;
 }
-
 function setupSmall(canvas) {
   canvas.width = N; canvas.height = N;
   canvas.style.width  = (N*cell) + 'px';
   canvas.style.height = (N*cell) + 'px';
 }
-
 function drawVecSlice(canvas, slice) {
   setupSmall(canvas);
   const ctx = canvas.getContext('2d');
@@ -388,15 +770,11 @@ function drawVecSlice(canvas, slice) {
         b = Math.pow(0.5 + 0.5*uz, 0.85) * v;
       }
       const o = 4*(i*N + j);
-      img.data[o]   = (r*255)|0;
-      img.data[o+1] = (g*255)|0;
-      img.data[o+2] = (b*255)|0;
-      img.data[o+3] = 255;
+      img.data[o]=(r*255)|0; img.data[o+1]=(g*255)|0; img.data[o+2]=(b*255)|0; img.data[o+3]=255;
     }
   }
   ctx.putImageData(img, 0, 0);
 }
-
 function drawMagSlice(canvas, slice) {
   setupSmall(canvas);
   const ctx = canvas.getContext('2d');
@@ -416,12 +794,11 @@ function drawMagSlice(canvas, slice) {
       const g = (60 + 180*v)|0;
       const b = (255*Math.pow(v, 0.6))|0;
       const o = 4*(i*N + j);
-      img.data[o] = r; img.data[o+1] = g; img.data[o+2] = b; img.data[o+3] = 255;
+      img.data[o]=r; img.data[o+1]=g; img.data[o+2]=b; img.data[o+3]=255;
     }
   }
   ctx.putImageData(img, 0, 0);
 }
-
 function drawScalarSigned(canvas, slice) {
   setupSmall(canvas);
   const ctx = canvas.getContext('2d');
@@ -433,8 +810,8 @@ function drawScalarSigned(canvas, slice) {
       const v = slice[i*N + j] / mx;
       const a = Math.abs(v);
       const o = 4*(i*N + j);
-      if (v > 0) { img.data[o] = 255*a; img.data[o+1] = 110*a; img.data[o+2] = 70*a;  }
-      else       { img.data[o] = 70*a;  img.data[o+1] = 140*a; img.data[o+2] = 255*a; }
+      if (v > 0) { img.data[o]=255*a; img.data[o+1]=110*a; img.data[o+2]=70*a;  }
+      else       { img.data[o]=70*a;  img.data[o+1]=140*a; img.data[o+2]=255*a; }
       img.data[o+3] = 255;
     }
   }
@@ -453,14 +830,11 @@ function sampleV3(px, py, pz) {
   const tx = fx - k0, ty = fy - j0, tz = fz - i0;
   let mx = 0, my = 0, mz = 0;
   for (let di = 0; di < 2; di++) {
-    const i  = di === 0 ? i0 : i1;
-    const wi = di === 0 ? (1-tz) : tz;
+    const i  = di === 0 ? i0 : i1; const wi = di === 0 ? (1-tz) : tz;
     for (let dj = 0; dj < 2; dj++) {
-      const j  = dj === 0 ? j0 : j1;
-      const wj = dj === 0 ? (1-ty) : ty;
+      const j  = dj === 0 ? j0 : j1; const wj = dj === 0 ? (1-ty) : ty;
       for (let dk = 0; dk < 2; dk++) {
-        const k  = dk === 0 ? k0 : k1;
-        const wk = dk === 0 ? (1-tx) : tx;
+        const k  = dk === 0 ? k0 : k1; const wk = dk === 0 ? (1-tx) : tx;
         const w  = wi * wj * wk;
         const v  = vIdx(i,j,k);
         mx += V[v]*w; my += V[v+1]*w; mz += V[v+2]*w;
@@ -469,7 +843,6 @@ function sampleV3(px, py, pz) {
   }
   return [mx, my, mz];
 }
-
 function project3DSetup(W) {
   const yaw   = parseFloat($('ctlYaw').value)   * Math.PI / 180;
   const pitch = parseFloat($('ctlPitch').value) * Math.PI / 180;
@@ -489,7 +862,20 @@ function project3DSetup(W) {
     return [W/2 + X2*scl, W/2 - Y2*scl, Z2];
   };
 }
-
+function drawTripod(ctx, proj) {
+  const [u0, v0]   = proj(0, 0, 0);
+  const [uxe, vxe] = proj(N*0.25, 0, 0);
+  const [uye, vye] = proj(0, N*0.25, 0);
+  const [uze, vze] = proj(0, 0, N*0.25);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#e66'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uxe,vxe); ctx.stroke();
+  ctx.strokeStyle = '#6e6'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uye,vye); ctx.stroke();
+  ctx.strokeStyle = '#69f'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uze,vze); ctx.stroke();
+  ctx.fillStyle = '#aaa'; ctx.font = '10px ui-monospace,monospace';
+  ctx.fillText('x', uxe + 4, vxe);
+  ctx.fillText('y', uye + 4, vye);
+  ctx.fillText('z', uze + 4, vze);
+}
 function draw3DStreamlines(canvas) {
   const W   = canvas.width;
   const ctx = canvas.getContext('2d');
@@ -497,11 +883,9 @@ function draw3DStreamlines(canvas) {
   ctx.fillRect(0, 0, W, W);
   const proj = project3DSetup(W);
 
-  // wireframe cube
   const cube = [];
-  for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) for (let cc = 0; cc < 2; cc++) {
+  for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) for (let cc = 0; cc < 2; cc++)
     cube.push([a*(N-1), b*(N-1), cc*(N-1)]);
-  }
   const edges = [];
   for (let p = 0; p < 8; p++) for (let q = p+1; q < 8; q++) {
     const dx = Math.abs(cube[p][0] - cube[q][0]);
@@ -510,7 +894,7 @@ function draw3DStreamlines(canvas) {
     if (dx + dy + dz === (N - 1)) edges.push([p, q]);
   }
   ctx.strokeStyle = '#444';
-  ctx.lineWidth   = 1;
+  ctx.lineWidth = 1;
   ctx.beginPath();
   for (const [p, q] of edges) {
     const [u0, v0] = proj(cube[p][0], cube[p][1], cube[p][2]);
@@ -528,8 +912,8 @@ function draw3DStreamlines(canvas) {
   const stride  = Math.max(1, Math.floor(N / seedDen));
 
   const segs = [];
-  for (let si = 0; si < N; si += stride) {
-    for (let sj = 0; sj < N; sj += stride) {
+  for (let si = 0; si < N; si += stride)
+    for (let sj = 0; sj < N; sj += stride)
       for (let sk = 0; sk < N; sk += stride) {
         let x = sk + 0.5, y = sj + 0.5, z = si + 0.5;
         let [puu, pvv, pdd] = proj(x, y, z);
@@ -550,9 +934,7 @@ function draw3DStreamlines(canvas) {
           prevX = x; prevY = y; prevZ = z;
         }
       }
-    }
-  }
-  segs.sort((a, b) => a[4] - b[4]);   // far first
+  segs.sort((a, b) => a[4] - b[4]);
   ctx.lineCap = 'round';
   for (const seg of segs) {
     const [u0, v0, u1, v1, d, mag] = seg;
@@ -571,21 +953,6 @@ function draw3DStreamlines(canvas) {
   drawTripod(ctx, proj);
 }
 
-function drawTripod(ctx, proj) {
-  const [u0, v0]   = proj(0, 0, 0);
-  const [uxe, vxe] = proj(N*0.25, 0, 0);
-  const [uye, vye] = proj(0, N*0.25, 0);
-  const [uze, vze] = proj(0, 0, N*0.25);
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = '#e66'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uxe,vxe); ctx.stroke();
-  ctx.strokeStyle = '#6e6'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uye,vye); ctx.stroke();
-  ctx.strokeStyle = '#69f'; ctx.beginPath(); ctx.moveTo(u0,v0); ctx.lineTo(uze,vze); ctx.stroke();
-  ctx.fillStyle = '#aaa'; ctx.font = '10px ui-monospace,monospace';
-  ctx.fillText('x', uxe + 4, vxe);
-  ctx.fillText('y', uye + 4, vye);
-  ctx.fillText('z', uze + 4, vze);
-}
-
 // ── Master render ───────────────────────────────────────────────────
 function render() {
   draw3DStreamlines($('c3d'));
@@ -596,7 +963,6 @@ function render() {
   drawMagSlice($('cVMag'),    sliceVec(V, axis, idx));
   drawScalarSigned($('cPhi'), sliceScalar(Phi, axis, idx));
 
-  // -Φ·|V| energy density
   const N3 = N*N*N;
   const energy = new Float32Array(N3);
   for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) {
@@ -606,18 +972,23 @@ function render() {
   }
   drawScalarSigned($('cEnerg'), sliceScalar(energy, axis, idx));
 
+  // discrete ∇·V (for diagnostic) — recompute on CPU from current V mirror
   const div = new Float32Array(N3);
-  computeDivInto(div);
+  for (let i = 0; i < N; i++) {
+    const im = (i-1+N)%N;
+    for (let j = 0; j < N; j++) {
+      const jm = (j-1+N)%N;
+      for (let k = 0; k < N; k++) {
+        const km = (k-1+N)%N;
+        const v = vIdx(i,j,k);
+        div[sIdx(i,j,k)] = (V[v] - V[vIdx(i,j,km)]) + (V[v+1] - V[vIdx(i,jm,k)+1]) + (V[v+2] - V[vIdx(im,j,k)+2]);
+      }
+    }
+  }
   const maxDiv = drawScalarSigned($('cDiv'), sliceScalar(div, axis, idx));
 
-  // status
-  let totV = 0, sumPhi = 0;
-  for (let l = 0; l < 3*N3; l += 3) {
-    totV += Math.sqrt(V[l]*V[l] + V[l+1]*V[l+1] + V[l+2]*V[l+2]);
-  }
-  for (let l = 0; l < N3; l++) sumPhi += Math.abs(Phi[l]);
-  // Energy: ½|∇V|² (use a forward-diff estimate) − Φ|V|; skip the |∇Φ|² piece for speed.
-  let dirich = 0, coupling = 0;
+  let totV = 0, dirich = 0, coupling = 0, maxAbsDiv = 0;
+  for (let l = 0; l < 3*N3; l += 3) totV += Math.sqrt(V[l]*V[l] + V[l+1]*V[l+1] + V[l+2]*V[l+2]);
   for (let i = 0; i < N; i++) {
     const ip = (i+1)%N;
     for (let j = 0; j < N; j++) {
@@ -637,27 +1008,19 @@ function render() {
       }
     }
   }
-  let maxAbsDiv = 0;
   for (let l = 0; l < N3; l++) { const v = Math.abs(div[l]); if (v > maxAbsDiv) maxAbsDiv = v; }
 
   stat.textContent =
     `step=${stepCount}  N=${N}³  Σ|V|=${totV.toFixed(2)} (target ${targetMass.toFixed(2)})  ` +
-    `Σ|Φ|=${sumPhi.toFixed(2)}  ` +
     `½∫|∇V|²=${dirich.toFixed(2)}  −∫Φ|V|=${coupling.toFixed(2)}  ` +
     `max|∇·V|=${maxAbsDiv.toExponential(2)}  ` +
-    (iterating ? `${fps.toFixed(0)} fps` : 'idle');
+    (iterating ? `${fps.toFixed(0)} fps · GPU` : 'idle · GPU');
 }
 
 // ── Loop ────────────────────────────────────────────────────────────
 function tick() {
   if (!iterating) return;
-  const dt    = parseFloat($('ctlDt').value);
-  const nu    = parseFloat($('ctlNu').value);
-  const g     = parseFloat($('ctlG').value);
-  const damp  = parseFloat($('ctlDamp').value);
-  const divIt = parseInt($('ctlDivIt').value);
-  const potIt = parseInt($('ctlPotIt').value);
-  step(dt, nu, g, damp, divIt, potIt);
+  step();
   stepCount++;
   frames++;
   const now = performance.now();
@@ -675,6 +1038,15 @@ function bindLabel(id, lblId) {
   const upd = () => { lbl.textContent = el.value; };
   el.addEventListener('input', upd); upd();
 }
+
+try {
+  gpu = new GPUSim();
+} catch (e) {
+  $('gpuerr').style.display = 'block';
+  $('gpuerr').textContent = 'GPU initialisation failed: ' + e.message;
+  throw e;
+}
+
 ['ctlN','ctlCell','ctlDt','ctlNu','ctlG','ctlKappa','ctlJitter','ctlDamp',
  'ctlDivIt','ctlPotIt','ctlYaw','ctlPitch','ctlSeed','ctlTrace','ctlSlice'
 ].forEach(id => bindLabel(id, 'lbl' + id.slice(3)));
@@ -694,29 +1066,17 @@ $('ctlTrace').addEventListener('input', () => draw3DStreamlines($('c3d')));
 $('ctlAxis').addEventListener('change', () => render());
 $('ctlSlice').addEventListener('input', () => render());
 $('ctlKappa').addEventListener('change', () => {
-  computePotential(parseInt($('ctlPotIt').value));
+  gpu.computePotentialOnly(parseInt($('ctlPotIt').value), parseFloat($('ctlKappa').value));
+  gpu.downloadPhi(Phi);
   render();
 });
 $('btnRand').addEventListener('click', () => { randomize(); stepCount = 0; render(); });
 $('btnZero').addEventListener('click', () => { zero(); stepCount = 0; render(); });
 $('btnJitter').addEventListener('click', () => {
   jitter(parseFloat($('ctlJitter').value));
-  projectDivFree(parseInt($('ctlDivIt').value));
-  rescaleMass();
-  computePotential(parseInt($('ctlPotIt').value));
   render();
 });
-$('btnStep').addEventListener('click', () => {
-  const dt    = parseFloat($('ctlDt').value);
-  const nu    = parseFloat($('ctlNu').value);
-  const g     = parseFloat($('ctlG').value);
-  const damp  = parseFloat($('ctlDamp').value);
-  const divIt = parseInt($('ctlDivIt').value);
-  const potIt = parseInt($('ctlPotIt').value);
-  step(dt, nu, g, damp, divIt, potIt);
-  stepCount++;
-  render();
-});
+$('btnStep').addEventListener('click', () => { step(); stepCount++; render(); });
 const btnIter = $('btnIter');
 btnIter.addEventListener('click', () => {
   iterating = !iterating;
@@ -725,7 +1085,6 @@ btnIter.addEventListener('click', () => {
   if (iterating) { lastTime = performance.now(); frames = 0; requestAnimationFrame(tick); }
 });
 
-// drag the 3D canvas to rotate
 (() => {
   const c = $('c3d');
   let dragging = false, lastX = 0, lastY = 0;
