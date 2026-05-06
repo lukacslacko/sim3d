@@ -51,9 +51,10 @@ slice / streamline visualisations.
       <button id="btnJitter">Jitter</button>
       <button id="btnStep">Step</button>
       <button id="btnIter">Iterate</button>
+      <button id="btnRefine" title="Double N. Each new cell inherits from the old cell containing it (2×2×2 nearest-neighbour upscale). Continues the simulation from the upscaled state.">Refine ×2</button>
     </div>
     <div class="controls">
-      <label>N (grid)</label>      <input id="ctlN"       type="range" min="8"   max="64"   step="2"     value="20"><span class="val" id="lblN"></span>
+      <label>N (grid)</label>      <input id="ctlN"       type="range" min="8"   max="128"  step="2"     value="20"><span class="val" id="lblN"></span>
       <label>cell px</label>       <input id="ctlCell"    type="range" min="2"   max="22"   step="1"     value="10"><span class="val" id="lblCell"></span>
       <label>dt</label>            <input id="ctlDt"      type="range" min="0"   max="0.2"  step="0.001" value="0.020"><span class="val" id="lblDt"></span>
       <label>ν tension</label>     <input id="ctlNu"      type="range" min="0"   max="3"    step="0.01"  value="1.00"><span class="val" id="lblNu"></span>
@@ -70,14 +71,19 @@ slice / streamline visualisations.
       <label>seed density</label>  <input id="ctlSeed"    type="range" min="2"   max="14"  step="1"     value="6"><span class="val" id="lblSeed"></span>
       <label>trace length</label>  <input id="ctlTrace"   type="range" min="5"   max="200" step="1"     value="80"><span class="val" id="lblTrace"></span>
       <label>slice axis</label>    <select id="ctlAxis"><option value="XY">XY (z fixed)</option><option value="YZ">YZ (x fixed)</option><option value="XZ">XZ (y fixed)</option></select><span class="val">&nbsp;</span>
-      <label>slice index</label>   <input id="ctlSlice"   type="range" min="0"   max="63"  step="1"     value="10"><span class="val" id="lblSlice"></span>
+      <label>slice index</label>   <input id="ctlSlice"   type="range" min="0"   max="127" step="1"     value="10"><span class="val" id="lblSlice"></span>
+      <label>shift x</label>       <input id="ctlOx"      type="range" min="0"   max="127" step="1"     value="0"><span class="val" id="lblOx"></span>
+      <label>shift y</label>       <input id="ctlOy"      type="range" min="0"   max="127" step="1"     value="0"><span class="val" id="lblOy"></span>
+      <label>shift z</label>       <input id="ctlOz"      type="range" min="0"   max="127" step="1"     value="0"><span class="val" id="lblOz"></span>
     </div>
     <div id="status"></div>
     <div class="legend">
-      Higher N stays smooth on the GPU; on a discrete laptop GPU N=64 keeps interactive rates.
-      All Jacobi sweeps and stencils are vectorised in fragment shaders; the only round-trip is
-      a single 1×1 readback per reduction (mean of |V|, total mass) plus per-frame V,Φ readback
-      for visualisation.
+      Higher N stays smooth on the GPU; the only round-trip is a 1×1 readback per reduction
+      (mean of |V|, total mass) plus per-frame V,Φ readback for visualisation.
+      <b>Shift</b> is render-only (PBC wraps); use the <code>shift x/y/z</code> sliders or
+      press <kbd>x</kbd>/<kbd>y</kbd>/<kbd>z</kbd> (<kbd>Shift</kbd>+key reverses) to translate
+      the cube origin by one cell along that axis.
+      <b>Refine ×2</b> doubles N and continues the simulation from the upscaled state.
     </div>
   </div>
   <div class="panel">
@@ -611,6 +617,7 @@ let lastTime   = performance.now();
 let frames     = 0;
 let fps        = 0;
 let gpu        = null;
+let offsetCells = [0, 0, 0];      // render-only origin shift in cells (ox, oy, oz)
 
 const $    = id => document.getElementById(id);
 const stat = $('status');
@@ -628,6 +635,15 @@ function alloc(n) {
   slice.max   = N - 1;
   if (parseInt(slice.value) > N - 1) slice.value = (N - 1) >> 1;
   $('lblSlice').textContent = slice.value;
+  for (const id of ['ctlOx','ctlOy','ctlOz']) {
+    const el = $(id);
+    el.max = N - 1;
+    if (parseInt(el.value) > N - 1) el.value = '0';
+    $('lbl' + id.slice(3)).textContent = el.value;
+  }
+  offsetCells[0] = parseInt($('ctlOx').value);
+  offsetCells[1] = parseInt($('ctlOy').value);
+  offsetCells[2] = parseInt($('ctlOz').value);
 }
 
 function totalMass() {
@@ -688,6 +704,52 @@ function step() {
   gpu.downloadPhi(Phi);
 }
 
+// Double N and seed the new (finer) grid by 2×2×2 nearest-neighbour upscale of
+// the current state.  Continues simulating from the upscaled field instead of
+// restarting from random — useful for letting a coarse near-converged state
+// seed a high-resolution refinement.
+function refine() {
+  const oldN = N;
+  const newN = oldN * 2;
+  if (newN > 128) return;
+  const oldV   = V;
+  const oldOff = offsetCells.slice();
+  alloc(newN);
+  // 2×2×2 nearest-neighbour upscale of V; new (ix,iy,iz) inherits old (ix>>1, iy>>1, iz>>1).
+  for (let iz = 0; iz < newN; iz++) {
+    const ozI = (iz >> 1);
+    for (let iy = 0; iy < newN; iy++) {
+      const oyI = (iy >> 1);
+      for (let ix = 0; ix < newN; ix++) {
+        const oxI = (ix >> 1);
+        const iN = 3 * ((iz * newN + iy) * newN + ix);
+        const iO = 3 * ((ozI * oldN + oyI) * oldN + oxI);
+        V[iN]     = oldV[iO];
+        V[iN + 1] = oldV[iO + 1];
+        V[iN + 2] = oldV[iO + 2];
+      }
+    }
+  }
+  // The cube grew by 2× in each axis; preserve the same physical shift.
+  offsetCells[0] = (oldOff[0] * 2) % newN;
+  offsetCells[1] = (oldOff[1] * 2) % newN;
+  offsetCells[2] = (oldOff[2] * 2) % newN;
+  for (const id of ['ctlOx','ctlOy','ctlOz']) {
+    const idx = id === 'ctlOx' ? 0 : id === 'ctlOy' ? 1 : 2;
+    $(id).value = String(offsetCells[idx]);
+    $('lbl' + id.slice(3)).textContent = $(id).value;
+  }
+  gpu.uploadV(V);
+  // Φ scales with N²; rebuild it to be consistent with the new grid spacing
+  // before the next gradient-descent step uses it.
+  gpu.computePotentialOnly(parseInt($('ctlPotIt').value), parseFloat($('ctlKappa').value));
+  gpu.downloadPhi(Phi);
+  // Σ|V| grew by a factor of 8 because every old cell now contributes 8 copies.
+  targetMass = totalMass();
+  $('ctlN').value = String(newN);
+  $('lblN').textContent = String(newN);
+}
+
 // ── Drawing helpers ──────────────────────────────────────────────────
 function nrm(v, mx) {
   const r = v / Math.max(mx, 1e-9);
@@ -703,40 +765,60 @@ function maxVecMag3() {
   }
   return Math.sqrt(mx);
 }
+// Slice extraction with the render-only origin shift applied: the displayed
+// pixel (j_disp, k_disp) at slice index `idx` reads from the field cell at
+// ((idx + oz) mod N, (j_disp + oy) mod N, (k_disp + ox) mod N) (with axis
+// conventions varied per slice plane).
 function sliceVec(F, axis, idx) {
+  const ox = offsetCells[0], oy = offsetCells[1], oz = offsetCells[2];
+  const wrap = (a) => ((a % N) + N) % N;
   const out = new Float32Array(3*N*N);
   if (axis === 'XY') {
-    const i = idx;
-    for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) {
-      const v = vIdx(i,j,k); const o = 3*(j*N+k);
-      out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
+    const i = wrap(idx + oz);
+    for (let j = 0; j < N; j++) {
+      const fj = wrap(j + oy);
+      for (let k = 0; k < N; k++) {
+        const v = vIdx(i, fj, wrap(k + ox)); const o = 3*(j*N+k);
+        out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
+      }
     }
   } else if (axis === 'YZ') {
-    const k = idx;
-    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
-      const v = vIdx(i,j,k); const o = 3*(i*N+j);
-      out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
+    const k = wrap(idx + ox);
+    for (let i = 0; i < N; i++) {
+      const fi = wrap(i + oz);
+      for (let j = 0; j < N; j++) {
+        const v = vIdx(fi, wrap(j + oy), k); const o = 3*(i*N+j);
+        out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
+      }
     }
   } else {
-    const j = idx;
-    for (let i = 0; i < N; i++) for (let k = 0; k < N; k++) {
-      const v = vIdx(i,j,k); const o = 3*(i*N+k);
-      out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
+    const j = wrap(idx + oy);
+    for (let i = 0; i < N; i++) {
+      const fi = wrap(i + oz);
+      for (let k = 0; k < N; k++) {
+        const v = vIdx(fi, j, wrap(k + ox)); const o = 3*(i*N+k);
+        out[o]=F[v]; out[o+1]=F[v+1]; out[o+2]=F[v+2];
+      }
     }
   }
   return out;
 }
 function sliceScalar(F, axis, idx) {
+  const ox = offsetCells[0], oy = offsetCells[1], oz = offsetCells[2];
+  const wrap = (a) => ((a % N) + N) % N;
   const out = new Float32Array(N*N);
   if (axis === 'XY') {
-    const i = idx;
-    for (let j = 0; j < N; j++) for (let k = 0; k < N; k++) out[j*N+k] = F[sIdx(i,j,k)];
+    const i = wrap(idx + oz);
+    for (let j = 0; j < N; j++) for (let k = 0; k < N; k++)
+      out[j*N+k] = F[sIdx(i, wrap(j+oy), wrap(k+ox))];
   } else if (axis === 'YZ') {
-    const k = idx;
-    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) out[i*N+j] = F[sIdx(i,j,k)];
+    const k = wrap(idx + ox);
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++)
+      out[i*N+j] = F[sIdx(wrap(i+oz), wrap(j+oy), k)];
   } else {
-    const j = idx;
-    for (let i = 0; i < N; i++) for (let k = 0; k < N; k++) out[i*N+k] = F[sIdx(i,j,k)];
+    const j = wrap(idx + oy);
+    for (let i = 0; i < N; i++) for (let k = 0; k < N; k++)
+      out[i*N+k] = F[sIdx(wrap(i+oz), j, wrap(k+ox))];
   }
   return out;
 }
@@ -912,24 +994,32 @@ function draw3DStreamlines(canvas) {
   const stride  = Math.max(1, Math.floor(N / seedDen));
 
   const segs = [];
+  // Origin shift is applied at display time: streamlines integrate in original
+  // coords (sampleV3 wraps periodically), then we project (pos − offset) mod N.
+  // A wrap is detected by comparing display positions: a single integrator step
+  // moves by < 1 cell, so a |delta| > N/2 jump means we crossed a cube face.
+  const ox = offsetCells[0], oy = offsetCells[1], oz = offsetCells[2];
+  const wrap = (a) => ((a % N) + N) % N;
   for (let si = 0; si < N; si += stride)
     for (let sj = 0; sj < N; sj += stride)
       for (let sk = 0; sk < N; sk += stride) {
         let x = sk + 0.5, y = sj + 0.5, z = si + 0.5;
-        let [puu, pvv, pdd] = proj(x, y, z);
+        let dxp = wrap(x - ox), dyp = wrap(y - oy), dzp = wrap(z - oz);
+        let [puu, pvv, pdd] = proj(dxp, dyp, dzp);
         for (let s = 0; s < nSteps; s++) {
           const [vx, vy, vz] = sampleV3(x, y, z);
           const m = Math.sqrt(vx*vx + vy*vy + vz*vz);
           if (m < 1e-9) break;
-          // step in the unwrapped frame; if it leaves [0,N) on any axis we crossed
-          // the periodic boundary and the segment from the previous sample to here
-          // would jump across the cube — drop it.
           const nx = x + vx * scl, ny = y + vy * scl, nz = z + vz * scl;
-          const wrapped = nx < 0 || nx >= N || ny < 0 || ny >= N || nz < 0 || nz >= N;
-          x = ((nx % N) + N) % N;
-          y = ((ny % N) + N) % N;
-          z = ((nz % N) + N) % N;
-          const [u, v, d] = proj(x, y, z);
+          x = wrap(nx);
+          y = wrap(ny);
+          z = wrap(nz);
+          const dxn = wrap(x - ox), dyn = wrap(y - oy), dzn = wrap(z - oz);
+          const wrapped = Math.abs(dxn - dxp) > N/2
+                       || Math.abs(dyn - dyp) > N/2
+                       || Math.abs(dzn - dzp) > N/2;
+          dxp = dxn; dyp = dyn; dzp = dzn;
+          const [u, v, d] = proj(dxp, dyp, dzp);
           if (!wrapped) segs.push([puu, pvv, u, v, 0.5*(pdd + d), m / mx]);
           puu = u; pvv = v; pdd = d;
         }
@@ -1048,8 +1138,20 @@ try {
 }
 
 ['ctlN','ctlCell','ctlDt','ctlNu','ctlG','ctlKappa','ctlJitter','ctlDamp',
- 'ctlDivIt','ctlPotIt','ctlYaw','ctlPitch','ctlSeed','ctlTrace','ctlSlice'
+ 'ctlDivIt','ctlPotIt','ctlYaw','ctlPitch','ctlSeed','ctlTrace','ctlSlice',
+ 'ctlOx','ctlOy','ctlOz'
 ].forEach(id => bindLabel(id, 'lbl' + id.slice(3)));
+
+function readShiftFromUI() {
+  offsetCells[0] = parseInt($('ctlOx').value);
+  offsetCells[1] = parseInt($('ctlOy').value);
+  offsetCells[2] = parseInt($('ctlOz').value);
+}
+function writeShiftToUI() {
+  $('ctlOx').value = String(offsetCells[0]); $('lblOx').textContent = String(offsetCells[0]);
+  $('ctlOy').value = String(offsetCells[1]); $('lblOy').textContent = String(offsetCells[1]);
+  $('ctlOz').value = String(offsetCells[2]); $('lblOz').textContent = String(offsetCells[2]);
+}
 
 $('ctlN').addEventListener('change', e => {
   alloc(parseInt(e.target.value));
@@ -1065,6 +1167,9 @@ $('ctlSeed').addEventListener('input',  () => draw3DStreamlines($('c3d')));
 $('ctlTrace').addEventListener('input', () => draw3DStreamlines($('c3d')));
 $('ctlAxis').addEventListener('change', () => render());
 $('ctlSlice').addEventListener('input', () => render());
+$('ctlOx').addEventListener('input', () => { readShiftFromUI(); render(); });
+$('ctlOy').addEventListener('input', () => { readShiftFromUI(); render(); });
+$('ctlOz').addEventListener('input', () => { readShiftFromUI(); render(); });
 $('ctlKappa').addEventListener('change', () => {
   gpu.computePotentialOnly(parseInt($('ctlPotIt').value), parseFloat($('ctlKappa').value));
   gpu.downloadPhi(Phi);
@@ -1077,6 +1182,31 @@ $('btnJitter').addEventListener('click', () => {
   render();
 });
 $('btnStep').addEventListener('click', () => { step(); stepCount++; render(); });
+$('btnRefine').addEventListener('click', () => { refine(); render(); });
+
+// Keyboard: x/y/z shift the displayed grid by one cell along that axis,
+// Shift+x/y/z reverses.  PBC means this is purely visual.
+addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  let dx = 0, dy = 0, dz = 0;
+  switch (e.key) {
+    case 'x': dx =  1; break;
+    case 'X': dx = -1; break;
+    case 'y': dy =  1; break;
+    case 'Y': dy = -1; break;
+    case 'z': dz =  1; break;
+    case 'Z': dz = -1; break;
+    default: return;
+  }
+  e.preventDefault();
+  offsetCells[0] = ((offsetCells[0] + dx) % N + N) % N;
+  offsetCells[1] = ((offsetCells[1] + dy) % N + N) % N;
+  offsetCells[2] = ((offsetCells[2] + dz) % N + N) % N;
+  writeShiftToUI();
+  render();
+});
 const btnIter = $('btnIter');
 btnIter.addEventListener('click', () => {
   iterating = !iterating;
