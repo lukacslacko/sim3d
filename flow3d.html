@@ -64,6 +64,7 @@ slice / streamline visualisations.
       <label>damping</label>       <input id="ctlDamp"    type="range" min="0"   max="0.05" step="0.001" value="0.000"><span class="val" id="lblDamp"></span>
       <label>div-free iters</label><input id="ctlDivIt"   type="range" min="0"   max="60"   step="1"     value="20"><span class="val" id="lblDivIt"></span>
       <label>potential iters</label><input id="ctlPotIt"  type="range" min="0"   max="60"   step="1"     value="20"><span class="val" id="lblPotIt"></span>
+      <label>boundary</label>      <select id="ctlBoundary"><option value="periodic">periodic torus</option><option value="dirichlet">cube (V=0, Φ=0 outside)</option></select><span class="val">&nbsp;</span>
       <label>conserve mass</label> <input id="ctlConsv"   type="checkbox" checked><span class="val">&nbsp;</span>
       <label>log brightness</label><input id="ctlLog"     type="checkbox"><span class="val">&nbsp;</span>
       <label>3D yaw°</label>       <input id="ctlYaw"     type="range" min="-180" max="180" step="1"     value="35"><span class="val" id="lblYaw"></span>
@@ -112,15 +113,18 @@ in vec2 aPos;
 void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
 `;
 
-// Common header:  3D ↔ 2D atlas mapping helpers.
+// Common header:  3D ↔ 2D atlas mapping helpers and boundary-aware fetch.
 // Atlas is Nt×Nt grid of N×N tiles; slice i lives in tile (i/Nt, i%Nt).
 // ijkOf reverses; coordOf wraps modulo N for periodic stencils.
+// uBoundary == 0  →  periodic torus (every neighbour wraps).
+// uBoundary == 1  →  Dirichlet zero outside the cube (out-of-range neighbours read as 0).
 const FS_PRELUDE = `#version 300 es
 precision highp float;
 precision highp int;
 precision highp sampler2D;
 uniform int N;
 uniform int Nt;
+uniform int uBoundary;
 ivec2 coordOf(int i, int j, int k) {
   i = ((i % N) + N) % N;
   j = ((j % N) + N) % N;
@@ -136,6 +140,17 @@ ivec3 ijkOf(ivec2 px) {
   int j  = px.y - ti * N;
   int k  = px.x - tj * N;
   return ivec3(i, j, k);
+}
+bool outOfBounds(int i, int j, int k) {
+  return i < 0 || i >= N || j < 0 || j >= N || k < 0 || k >= N;
+}
+vec4 fetchVec(sampler2D tex, int i, int j, int k) {
+  if (uBoundary == 1 && outOfBounds(i, j, k)) return vec4(0.0);
+  return texelFetch(tex, coordOf(i, j, k), 0);
+}
+float fetchScalar(sampler2D tex, int i, int j, int k) {
+  if (uBoundary == 1 && outOfBounds(i, j, k)) return 0.0;
+  return texelFetch(tex, coordOf(i, j, k), 0).r;
 }
 out vec4 fragColor;
 `;
@@ -174,12 +189,12 @@ void main() {
   ivec3 ijk = ijkOf(px);
   if (ijk.x >= N) { fragColor = vec4(0.0); return; }
   int i = ijk.x, j = ijk.y, k = ijk.z;
-  float s = texelFetch(uPhi, coordOf(i+1, j, k), 0).r
-          + texelFetch(uPhi, coordOf(i-1, j, k), 0).r
-          + texelFetch(uPhi, coordOf(i, j+1, k), 0).r
-          + texelFetch(uPhi, coordOf(i, j-1, k), 0).r
-          + texelFetch(uPhi, coordOf(i, j, k+1), 0).r
-          + texelFetch(uPhi, coordOf(i, j, k-1), 0).r;
+  float s = fetchScalar(uPhi, i+1, j, k)
+          + fetchScalar(uPhi, i-1, j, k)
+          + fetchScalar(uPhi, i, j+1, k)
+          + fetchScalar(uPhi, i, j-1, k)
+          + fetchScalar(uPhi, i, j, k+1)
+          + fetchScalar(uPhi, i, j, k-1);
   float src = texelFetch(uSrc, px, 0).r;
   fragColor = vec4((s - src) / 6.0, 0.0, 0.0, 0.0);
 }
@@ -196,12 +211,12 @@ void main() {
   if (ijk.x >= N) { fragColor = vec4(0.0); return; }
   int i = ijk.x, j = ijk.y, k = ijk.z;
   vec3 v_c = texelFetch(uV, px, 0).xyz;
-  vec3 lap = texelFetch(uV, coordOf(i+1, j, k), 0).xyz
-           + texelFetch(uV, coordOf(i-1, j, k), 0).xyz
-           + texelFetch(uV, coordOf(i, j+1, k), 0).xyz
-           + texelFetch(uV, coordOf(i, j-1, k), 0).xyz
-           + texelFetch(uV, coordOf(i, j, k+1), 0).xyz
-           + texelFetch(uV, coordOf(i, j, k-1), 0).xyz
+  vec3 lap = fetchVec(uV, i+1, j, k).xyz
+           + fetchVec(uV, i-1, j, k).xyz
+           + fetchVec(uV, i, j+1, k).xyz
+           + fetchVec(uV, i, j-1, k).xyz
+           + fetchVec(uV, i, j, k+1).xyz
+           + fetchVec(uV, i, j, k-1).xyz
            - 6.0 * v_c;
   float phi = texelFetch(uPhi, px, 0).r;
   float inv = inversesqrt(dot(v_c, v_c) + 1e-6);
@@ -244,9 +259,9 @@ void main() {
   if (ijk.x >= N) { fragColor = vec4(0.0); return; }
   int i = ijk.x, j = ijk.y, k = ijk.z;
   vec3 vC  = texelFetch(uV, px, 0).xyz;
-  vec3 vKm = texelFetch(uV, coordOf(i, j, k-1), 0).xyz;
-  vec3 vJm = texelFetch(uV, coordOf(i, j-1, k), 0).xyz;
-  vec3 vIm = texelFetch(uV, coordOf(i-1, j, k), 0).xyz;
+  vec3 vKm = fetchVec(uV, i, j, k-1).xyz;
+  vec3 vJm = fetchVec(uV, i, j-1, k).xyz;
+  vec3 vIm = fetchVec(uV, i-1, j, k).xyz;
   float d = (vC.x - vKm.x) + (vC.y - vJm.y) + (vC.z - vIm.z);
   fragColor = vec4(d, 0.0, 0.0, 0.0);
 }
@@ -262,9 +277,9 @@ void main() {
   int i = ijk.x, j = ijk.y, k = ijk.z;
   vec3 v   = texelFetch(uV, px, 0).xyz;
   float c  = texelFetch(uChi, px, 0).r;
-  float cIp = texelFetch(uChi, coordOf(i+1, j, k), 0).r;
-  float cJp = texelFetch(uChi, coordOf(i, j+1, k), 0).r;
-  float cKp = texelFetch(uChi, coordOf(i, j, k+1), 0).r;
+  float cIp = fetchScalar(uChi, i+1, j, k);
+  float cJp = fetchScalar(uChi, i, j+1, k);
+  float cKp = fetchScalar(uChi, i, j, k+1);
   fragColor = vec4(v.x - (cKp - c), v.y - (cJp - c), v.z - (cIp - c), 0.0);
 }
 `;
@@ -310,6 +325,7 @@ class GPUSim {
     this.reduceChain = null;
     this.N = -1;
     this._readbackBuf = null;
+    this.boundary = 0;            // 0 = periodic torus, 1 = Dirichlet zero outside
   }
   _initVAO() {
     const gl = this.gl;
@@ -430,6 +446,8 @@ class GPUSim {
 
     gl.uniform1i(gl.getUniformLocation(prog, 'N'), this.N);
     gl.uniform1i(gl.getUniformLocation(prog, 'Nt'), this.Nt);
+    const ubLoc = gl.getUniformLocation(prog, 'uBoundary');
+    if (ubLoc !== null) gl.uniform1i(ubLoc, this.boundary);
     if (uniforms) {
       for (const [name, value] of Object.entries(uniforms)) {
         const loc = gl.getUniformLocation(prog, name);
@@ -533,8 +551,10 @@ class GPUSim {
   computePotentialOnly(potIt, kappa) {
     const T = this.tex;
     this._runPass('mag', T.Mag, {}, { uV: T.V[0] });
-    const sumMag = this._reduceSum(T.Mag);
-    const meanMag = sumMag / (this.N * this.N * this.N);
+    // Periodic Poisson on the torus needs a zero-mean source for solvability;
+    // Dirichlet BC has no such constraint, so we feed src = −κ·|V| directly.
+    const sumMag  = this._reduceSum(T.Mag);
+    const meanMag = this.boundary === 0 ? sumMag / (this.N * this.N * this.N) : 0;
     this._runPass('src', T.Src, { uKappa: kappa, uMean: meanMag }, { uV: T.V[0] });
     for (let it = 0; it < potIt; it++) {
       this._runPass('jacobi', T.Phi[1], {}, { uPhi: T.Phi[0], uSrc: T.Src });
@@ -618,6 +638,7 @@ let frames     = 0;
 let fps        = 0;
 let gpu        = null;
 let offsetCells = [0, 0, 0];      // render-only origin shift in cells (ox, oy, oz)
+let boundaryMode = 0;             // 0 = periodic, 1 = Dirichlet zero outside cube
 
 const $    = id => document.getElementById(id);
 const stat = $('status');
@@ -903,22 +924,34 @@ function drawScalarSigned(canvas, slice) {
 
 // ── 3D streamline view ───────────────────────────────────────────────
 function sampleV3(px, py, pz) {
+  // Dirichlet: anything outside the cube reads as zero (V is exactly zero in
+  // ghost cells), so a streamline that has stepped past the boundary samples 0
+  // and the integrator terminates on the next iteration via the m<1e-9 check.
+  if (boundaryMode === 1 && (px < 0 || px >= N || py < 0 || py >= N || pz < 0 || pz >= N)) {
+    return [0, 0, 0];
+  }
   const fx = ((px % N) + N) % N;
   const fy = ((py % N) + N) % N;
   const fz = ((pz % N) + N) % N;
-  const k0 = Math.floor(fx), k1 = (k0+1)%N;
-  const j0 = Math.floor(fy), j1 = (j0+1)%N;
-  const i0 = Math.floor(fz), i1 = (i0+1)%N;
+  const k0 = Math.floor(fx), j0 = Math.floor(fy), i0 = Math.floor(fz);
+  // For periodic mode we wrap the upper corner; for Dirichlet we leave it
+  // unwrapped so the loop can detect ghost cells (i==N etc.) and skip them.
+  const k1 = boundaryMode === 1 ? (k0 + 1) : ((k0 + 1) % N);
+  const j1 = boundaryMode === 1 ? (j0 + 1) : ((j0 + 1) % N);
+  const i1 = boundaryMode === 1 ? (i0 + 1) : ((i0 + 1) % N);
   const tx = fx - k0, ty = fy - j0, tz = fz - i0;
   let mx = 0, my = 0, mz = 0;
   for (let di = 0; di < 2; di++) {
     const i  = di === 0 ? i0 : i1; const wi = di === 0 ? (1-tz) : tz;
+    if (boundaryMode === 1 && (i < 0 || i >= N)) continue;
     for (let dj = 0; dj < 2; dj++) {
       const j  = dj === 0 ? j0 : j1; const wj = dj === 0 ? (1-ty) : ty;
+      if (boundaryMode === 1 && (j < 0 || j >= N)) continue;
       for (let dk = 0; dk < 2; dk++) {
         const k  = dk === 0 ? k0 : k1; const wk = dk === 0 ? (1-tx) : tx;
+        if (boundaryMode === 1 && (k < 0 || k >= N)) continue;
         const w  = wi * wj * wk;
-        const v  = vIdx(i,j,k);
+        const v  = vIdx(i, j, k);
         mx += V[v]*w; my += V[v+1]*w; mz += V[v+2]*w;
       }
     }
@@ -995,29 +1028,36 @@ function draw3DStreamlines(canvas) {
 
   const segs = [];
   // Origin shift is applied at display time: streamlines integrate in original
-  // coords (sampleV3 wraps periodically), then we project (pos − offset) mod N.
-  // A wrap is detected by comparing display positions: a single integrator step
-  // moves by < 1 cell, so a |delta| > N/2 jump means we crossed a cube face.
+  // coords, then we project (pos − offset) mod N (periodic) or pos − offset
+  // (Dirichlet — no wrap, since the field has no periodic structure to relabel).
+  // Periodic wrap detection: a single integrator step moves by < 1 cell, so a
+  // |delta| > N/2 jump in displayed coords means we crossed a cube face.
   const ox = offsetCells[0], oy = offsetCells[1], oz = offsetCells[2];
+  const periodic = boundaryMode === 0;
   const wrap = (a) => ((a % N) + N) % N;
+  const dispCoord = periodic ? wrap : ((a) => a);
   for (let si = 0; si < N; si += stride)
     for (let sj = 0; sj < N; sj += stride)
       for (let sk = 0; sk < N; sk += stride) {
         let x = sk + 0.5, y = sj + 0.5, z = si + 0.5;
-        let dxp = wrap(x - ox), dyp = wrap(y - oy), dzp = wrap(z - oz);
+        let dxp = dispCoord(x - ox), dyp = dispCoord(y - oy), dzp = dispCoord(z - oz);
         let [puu, pvv, pdd] = proj(dxp, dyp, dzp);
         for (let s = 0; s < nSteps; s++) {
           const [vx, vy, vz] = sampleV3(x, y, z);
           const m = Math.sqrt(vx*vx + vy*vy + vz*vz);
           if (m < 1e-9) break;
           const nx = x + vx * scl, ny = y + vy * scl, nz = z + vz * scl;
-          x = wrap(nx);
-          y = wrap(ny);
-          z = wrap(nz);
-          const dxn = wrap(x - ox), dyn = wrap(y - oy), dzn = wrap(z - oz);
-          const wrapped = Math.abs(dxn - dxp) > N/2
-                       || Math.abs(dyn - dyp) > N/2
-                       || Math.abs(dzn - dzp) > N/2;
+          // periodic mode wraps in original coords too, so the next sampleV3 sees
+          // the wrapped position; Dirichlet leaves it unwrapped and sampleV3 then
+          // returns 0 outside [0,N), terminating the integration on the next iter.
+          x = periodic ? wrap(nx) : nx;
+          y = periodic ? wrap(ny) : ny;
+          z = periodic ? wrap(nz) : nz;
+          const dxn = dispCoord(x - ox), dyn = dispCoord(y - oy), dzn = dispCoord(z - oz);
+          const wrapped = periodic && (
+                Math.abs(dxn - dxp) > N/2
+             || Math.abs(dyn - dyp) > N/2
+             || Math.abs(dzn - dzp) > N/2);
           dxp = dxn; dyp = dyn; dzp = dzn;
           const [u, v, d] = proj(dxp, dyp, dzp);
           if (!wrapped) segs.push([puu, pvv, u, v, 0.5*(pdd + d), m / mx]);
@@ -1100,8 +1140,9 @@ function render() {
   }
   for (let l = 0; l < N3; l++) { const v = Math.abs(div[l]); if (v > maxAbsDiv) maxAbsDiv = v; }
 
+  const bc = boundaryMode === 0 ? 'periodic' : 'Dirichlet';
   stat.textContent =
-    `step=${stepCount}  N=${N}³  Σ|V|=${totV.toFixed(2)} (target ${targetMass.toFixed(2)})  ` +
+    `step=${stepCount}  N=${N}³  ${bc}  Σ|V|=${totV.toFixed(2)} (target ${targetMass.toFixed(2)})  ` +
     `½∫|∇V|²=${dirich.toFixed(2)}  −∫Φ|V|=${coupling.toFixed(2)}  ` +
     `max|∇·V|=${maxAbsDiv.toExponential(2)}  ` +
     (iterating ? `${fps.toFixed(0)} fps · GPU` : 'idle · GPU');
@@ -1173,6 +1214,19 @@ $('ctlOz').addEventListener('input', () => { readShiftFromUI(); render(); });
 $('ctlKappa').addEventListener('change', () => {
   gpu.computePotentialOnly(parseInt($('ctlPotIt').value), parseFloat($('ctlKappa').value));
   gpu.downloadPhi(Phi);
+  render();
+});
+$('ctlBoundary').addEventListener('change', () => {
+  boundaryMode = $('ctlBoundary').value === 'dirichlet' ? 1 : 0;
+  gpu.boundary = boundaryMode;
+  // Φ and χ have different solutions under different BC — reset auxiliaries
+  // and re-project / re-solve so the next step starts from a self-consistent state.
+  gpu.resetAux();
+  gpu.projectDivFreeOnly(60);
+  gpu.computePotentialOnly(60, parseFloat($('ctlKappa').value));
+  gpu.downloadV(V);
+  gpu.downloadPhi(Phi);
+  targetMass = totalMass();
   render();
 });
 $('btnRand').addEventListener('click', () => { randomize(); stepCount = 0; render(); });
