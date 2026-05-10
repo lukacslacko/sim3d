@@ -37,6 +37,7 @@
   #histPanel > div > h2:first-child,
   #histPanel > div > h3:first-child { margin-top: 0; }
   #histCanvas      { display: block; width: 220px; height: 220px; background: transparent; }
+  #angleHistCanvas { display: block; width: 220px; height: 220px; background: transparent; }
   #misHistCanvas   { display: block; width: 220px; height: 60px;  background: #0a0d12;
     border: 1px solid #1a232f; }
   #quatPlotCanvas  { display: block; width: 220px; height: 80px;  background: #0a0d12;
@@ -80,8 +81,12 @@
 
 <div id="ui">
   <h1>SIM3D — alignment</h1>
+  <label title="Per-cell value type.&#10;&#10;SO(3) (quaternion): each cell holds a unit quaternion / rotation in S³. π₁(SO(3))=ℤ/2 → defects are Z₂ disclination lines.&#10;S¹ (angle mod 2π): each cell holds a single angle θ ∈ [0, 2π). Switching value type resets the field (the two state types aren't compatible).">value type <select id="valueMode">
+    <option value="so3">SO(3) (quaternion)</option>
+    <option value="s1">S¹ (angle mod 2π)</option>
+  </select></label>
   <label title="Grid resolution per axis. The lattice is N×N×N coordinate frames inside the periodic cube. Cost scales as N³ for the alignment step (massively cheaper on GPU) and as N³ for the direction histogram (constant time per cell after the LUT). Refine doubles N and copies each old cell to a 2×2×2 block of new ones, so the simulation continues from the (now-finer) field instead of restarting from random.">N <input id="N" type="number" min="2" max="128" step="1" value="16"><button id="refineBtn" style="margin-left:6px;padding:1px 6px;">refine ×2</button></label>
-  <label title="Run the alignment iteration on the GPU as a ping-pong fragment-shader pass. CPU stepAlign is the bottleneck at large N (≈13 ms/step at N=40); the GPU version is typically 1–2 orders of magnitude faster, with one readPixels per frame to feed the visualization. Falls back to CPU automatically on WebGL1.">GPU compute <input type="checkbox" id="useGPU" checked></label>
+  <label class="so3-only" title="Run the alignment iteration on the GPU as a ping-pong fragment-shader pass. CPU stepAlign is the bottleneck at large N (≈13 ms/step at N=40); the GPU version is typically 1–2 orders of magnitude faster, with one readPixels per frame to feed the visualization. Falls back to CPU automatically on WebGL1. (SO(3) only.)">GPU compute <input type="checkbox" id="useGPU" checked></label>
   <label title="Edge length of the periodic cube. Frames are placed on a regular grid with spacing cubeSize/N; the boundary wraps so neighbors of an edge cell are on the opposite face.">cube size <input id="cubeSize" type="number" min="2" max="100" step="1" value="18"></label>
   <hr>
   <label title="Per-step alignment fraction. Each frame applies a rotation that's η·(1/6)·Σ rot_to_neighbors — i.e. rotates ~η of the way toward the average neighbor orientation. 0.05 = slow relaxation; 0.5 = aggressive snap.">step rate η <input id="eta" type="range" min="0.01" max="1.0" step="0.01" value="0.2"></label>
@@ -98,38 +103,39 @@
   <label class="mode-voxel" title="Misalignment value that maps to 'fully saturated' on the alpha curve. In heat mode this is the value that becomes fully bright red and fully opaque; in domains mode it's the value at which a cell becomes fully transparent.">color cap <input id="misalignCap" type="range" min="0.05" max="1.0" step="0.05" value="0.5"></label>
   <label class="mode-voxel" title="Transparency curve exponent.&#10;heat mode:    alpha = t^γ          (t = misalignment / cap; γ>1 = only severe defects show)&#10;domains mode: alpha = (1−t)^γ      (γ>1 = only nearly-perfect aligned regions show)">α gamma <input id="alphaGamma" type="range" min="0.2" max="5.0" step="0.1" value="1.0"></label>
   <label class="mode-components" title="Misalignment threshold for components mode. Cells with misalignment ≥ this value are kept and grouped into 6-connected components (PBC-aware); cells below it are invisible. Watch the misalignment histogram (bottom-left) — typically you want the threshold in the empty gap between the bulk peak (low misalign, aligned cells) and the defect-line peak (high misalign).">threshold <input id="misThreshold" type="range" min="0" max="1" step="0.005" value="0.3"></label>
-  <label class="mode-components" title="When two voxels are selected, also launch 8 short 'tube' paths from points around the loop in the two directions ⊥ to the loop's plane (i.e. along the segment between the two selected voxels). Each tube takes this many grid-spacing steps in each direction and draws a small RGB frame at every step, so you can see how the orientation field varies along the perpendicular to the loop. 0 = no tubes.">tube length <input id="tubeLength" type="range" min="0" max="30" step="1" value="10"></label>
-  <hr>
-  <label title="Trace streamlines starting from a regular grid on the cube's −Z face, stepping along each cell's local +Z direction, until they exit any cube face. Always rendered on top of the voxel mesh so they overlay any render mode (heat, domains, axes).">paths <input type="checkbox" id="showPaths"></label>
-  <label class="paths-on" title="Number of streamline seeds along each axis on the seeding face. Total streamlines = seeds².">seeds/side <input id="pathSeeds" type="range" min="2" max="20" step="1" value="10"></label>
-  <label class="paths-on" title="Streamline integration step as a fraction of the grid spacing. Smaller = smoother curves, more vertices, slightly more CPU; larger = chunkier but cheaper.">step size <input id="pathStepFrac" type="range" min="0.25" max="1.0" step="0.05" value="0.5"></label>
-  <hr>
-  <label title="Edge length, in world units, of the rectilinear grid of test particles dropped in the observer's local xy-plane when 'simulate' is pressed. Each particle sits at the geodesic distance equal to its planar distance from the observer (xy-tangent ray-march).">obs grid size <input id="obsGridSize" type="range" min="0.5" max="20" step="0.25" value="4.5"></label>
-  <label title="Number of test particles along each edge of the grid. Total = N². Cost scales as N²·numSteps.">obs grid N <input id="obsGridN" type="number" min="3" max="25" step="2" value="9"></label>
-  <label title="Observer proper-time step. Each tick advances the observer by dt · e_z(p_obs).">obs dt <input id="obsDt" type="range" min="0.01" max="1.0" step="0.01" value="0.1"></label>
-  <label title="Total observer time to follow. numSteps = totalTime / dt, capped at 1000 to bound memory.">obs total time <input id="obsTotalTime" type="number" min="1" max="200" step="1" value="40"></label>
+  <label class="mode-components so3-only" title="When two voxels are selected, also launch 8 short 'tube' paths from points around the loop in the two directions ⊥ to the loop's plane (i.e. along the segment between the two selected voxels). Each tube takes this many grid-spacing steps in each direction and draws a small RGB frame at every step, so you can see how the orientation field varies along the perpendicular to the loop. 0 = no tubes.">tube length <input id="tubeLength" type="range" min="0" max="30" step="1" value="10"></label>
+  <hr class="so3-only">
+  <label class="so3-only" title="Trace streamlines starting from a regular grid on the cube's −Z face, stepping along each cell's local +Z direction, until they exit any cube face. Always rendered on top of the voxel mesh so they overlay any render mode (heat, domains, axes).">paths <input type="checkbox" id="showPaths"></label>
+  <label class="paths-on so3-only" title="Number of streamline seeds along each axis on the seeding face. Total streamlines = seeds².">seeds/side <input id="pathSeeds" type="range" min="2" max="20" step="1" value="10"></label>
+  <label class="paths-on so3-only" title="Streamline integration step as a fraction of the grid spacing. Smaller = smoother curves, more vertices, slightly more CPU; larger = chunkier but cheaper.">step size <input id="pathStepFrac" type="range" min="0.25" max="1.0" step="0.05" value="0.5"></label>
+  <hr class="so3-only">
+  <label class="so3-only" title="Edge length, in world units, of the rectilinear grid of test particles dropped in the observer's local xy-plane when 'simulate' is pressed. Each particle sits at the geodesic distance equal to its planar distance from the observer (xy-tangent ray-march).">obs grid size <input id="obsGridSize" type="range" min="0.5" max="20" step="0.25" value="4.5"></label>
+  <label class="so3-only" title="Number of test particles along each edge of the grid. Total = N². Cost scales as N²·numSteps.">obs grid N <input id="obsGridN" type="number" min="3" max="25" step="2" value="9"></label>
+  <label class="so3-only" title="Observer proper-time step. Each tick advances the observer by dt · e_z(p_obs).">obs dt <input id="obsDt" type="range" min="0.01" max="1.0" step="0.01" value="0.1"></label>
+  <label class="so3-only" title="Total observer time to follow. numSteps = totalTime / dt, capped at 1000 to bound memory.">obs total time <input id="obsTotalTime" type="number" min="1" max="200" step="1" value="40"></label>
   <label title="How many alignment steps to run between renders. 1 = step every frame; higher values let you watch fast convergence in real time.">steps/frame <input id="stepsPerFrame" type="number" min="1" max="50" step="1" value="1"></label>
   <div class="row">
     <button id="resetBtn">reset</button>
     <button id="pauseBtn">pause</button>
     <button id="randBtn">randomize</button>
-    <button id="simulateBtn" title="Place an observer at the cube center; let it follow the local +Z (time) direction. A polar grid of test particles is dropped in the observer's xy-plane, then advanced step-by-step to keep them on the observer's instantaneous xy-plane. Their projected paths are drawn on a 2D map (right) colored by local time-warp factor (red=test particle's time runs faster than observer's, blue=slower). Pause the alignment first.">simulate</button>
+    <button id="simulateBtn" class="so3-only" title="Place an observer at the cube center; let it follow the local +Z (time) direction. A polar grid of test particles is dropped in the observer's xy-plane, then advanced step-by-step to keep them on the observer's instantaneous xy-plane. Their projected paths are drawn on a 2D map (right) colored by local time-warp factor (red=test particle's time runs faster than observer's, blue=slower). Pause the alignment first.">simulate</button>
   </div>
 </div>
 
 <div id="histPanel">
   <div>
-    <h2>+Z direction histogram</h2>
+    <h2 id="histTitle">+Z direction histogram</h2>
     <canvas id="histCanvas"></canvas>
+    <canvas id="angleHistCanvas" style="display:none"></canvas>
   </div>
   <div>
     <h3>misalignment histogram (log y)</h3>
     <canvas id="misHistCanvas"></canvas>
-    <h3>quaternion around loop</h3>
-    <canvas id="quatPlotCanvas"></canvas>
-    <div id="quatStatus">components mode: click two voxels to inspect a loop around the segment between them</div>
+    <h3 class="so3-only">quaternion around loop</h3>
+    <canvas id="quatPlotCanvas" class="so3-only"></canvas>
+    <div id="quatStatus" class="so3-only">components mode: click two voxels to inspect a loop around the segment between them</div>
   </div>
-  <div>
+  <div class="so3-only">
     <h3>rotation-vector ball (radius π, oriented like the cube)</h3>
     <canvas id="quatBallCanvas"></canvas>
   </div>
@@ -169,13 +175,18 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   createAlignGrid, randomizeAlignGrid, stepAlign,
-  fillAxesGeometry, fillZDirections, fillCellMisalignment,
+  fillAxesGeometry, fillS1AxesGeometry,
+  fillZDirections, fillCellMisalignment,
   meanNeighborMisalignment,
-} from './align.mjs?v=3';
-import { createDirectionHistogram } from './histogram.mjs?v=2';
+} from './align.mjs?v=4';
+import {
+  createDirectionHistogram, createAngleHistogram,
+} from './histogram.mjs?v=3';
 import { createGPUAligner } from './align_gpu.mjs?v=1';
 
 const params = {
+  // 'so3' = unit quaternion per cell; 's1' = real mod 2π per cell.
+  valueMode: 'so3',
   N: 16,
   cubeSize: 18,
   eta: 0.2,
@@ -243,7 +254,7 @@ const _ndcMouse = new THREE.Vector2();
 const _selScratchMat = new THREE.Matrix4();
 const _selScratchColor = new THREE.Color();
 let _mouseDownPos = null;             // for drag-vs-click in pointer events
-let state, axesBuf, dirsBuf, hist;
+let state, axesBuf, dirsBuf, hist, histAngle;
 let gpuAligner = null;
 // Streamline overlay: a single LineSegments mesh, allocated oversized once
 // at startup (fixed-cap buffers; drawRange limits per-frame). Each segment
@@ -481,7 +492,7 @@ function rebuildGrid() {
     gpuAligner.dispose();
     gpuAligner = null;
   }
-  state = createAlignGrid(params.N, params.cubeSize);
+  state = createAlignGrid(params.N, params.cubeSize, params.valueMode);
   const total = params.N * params.N * params.N;
   axesBuf = new Float32Array(total * 18);
   dirsBuf = new Float32Array(total * 3);
@@ -561,7 +572,9 @@ function rebuildGrid() {
   scene.add(voxelMesh);
 
   applyRenderMode();
-  if (params.useGPU) tryEnableGPU();
+  // GPU aligner only handles SO(3) at the moment; in S^1 mode we run the
+  // CPU step every frame regardless of the toggle.
+  if (params.useGPU && state.mode === 'so3') tryEnableGPU();
 }
 
 // Create the GPU aligner (if supported) and seed it from the current CPU
@@ -569,6 +582,7 @@ function rebuildGrid() {
 // gpuAligner already exists, no-op.
 function tryEnableGPU() {
   if (gpuAligner) return;
+  if (state && state.mode !== 'so3') return;     // GPU path is SO(3)-only
   gpuAligner = createGPUAligner(renderer, params.N);
   if (!gpuAligner) {
     console.warn('GPU compute unavailable (WebGL2 required). Using CPU.');
@@ -633,7 +647,12 @@ function buildPaths() {
 // take that domain's color.
 function updatePaths() {
   if (!pathLines) return;
-  if (!params.showPaths) { pathLines.visible = false; return; }
+  // Streamlines integrate along the local +Z axis, which only exists in
+  // SO(3) mode. In S^1 mode the toggle is hidden but bail out anyway.
+  if (!params.showPaths || !state || state.mode !== 'so3') {
+    pathLines.visible = false;
+    return;
+  }
   pathLines.visible = true;
 
   const N = params.N;
@@ -785,9 +804,14 @@ function updatePaths() {
 }
 
 // UI visibility for the "paths-on" labels (seeds slider, step-size slider).
+// In S^1 mode the parent paths label is so3-only; keep its sub-controls
+// hidden too even though `showPaths` may still be true from a prior session.
 function applyPathsUI() {
-  for (const el of document.querySelectorAll('.paths-on'))
-    el.style.display = params.showPaths ? '' : 'none';
+  const isS1 = state && state.mode === 's1';
+  for (const el of document.querySelectorAll('.paths-on')) {
+    const hidden = !params.showPaths || (isS1 && el.classList.contains('so3-only'));
+    el.style.display = hidden ? 'none' : '';
+  }
 }
 
 // ===========================================================================
@@ -1703,6 +1727,7 @@ function _updateSelectionMarkers() {
 // frame as long as 2 cells are selected (so it tracks the field/offset).
 function _refreshLoopInspector() {
   if (_selCells.length !== 2) return;
+  if (state.mode !== 'so3') return;     // quaternion-only: needs state.quats
   const N = params.N, L = params.cubeSize;
   const half = 0.5 * L, s = L / N;
   const offX = params.offsetCells[0] * s;
@@ -2227,6 +2252,7 @@ function _onMainCanvasPointerUp(e) {
   _mouseDownPos = null;
   if (Math.abs(dx) > 4 || Math.abs(dy) > 4) return;     // it was a drag, ignore
   if (params.renderMode !== 'components') return;       // only meaningful here
+  if (!state || state.mode !== 'so3') return;           // loop inspector is so3-only
   if (!voxelMesh || !voxelMesh.visible || !componentId) return;
   const rect = renderer.domElement.getBoundingClientRect();
   _ndcMouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -2323,23 +2349,40 @@ function updateVoxelColors() {
       }
     }
   } else if (params.renderMode === 'domains') {
-    for (let i = 0; i < total; i++) {
-      let t = voxelMisalignBuf[i] * inv;
-      if (t > 1) t = 1;
-      const dx = dirsBuf[3*i    ];
-      const dy = dirsBuf[3*i + 1];
-      const dz = dirsBuf[3*i + 2];
-      // Azimuth → hue. Equatorial directions get full saturation; near the
-      // poles (dz → ±1) saturation drops, and we use lightness to tell +Z
-      // (lighter) from −Z (darker) since their azimuth degenerates to 0.
-      let hue = Math.atan2(dy, dx) * TWO_PI_INV;
-      if (hue < 0) hue += 1;
-      const sat = Math.sqrt(dx*dx + dy*dy);
-      const lum = 0.30 + 0.20 * (dz + 1);
-      _voxelColor.setHSL(hue, sat, lum);
-      voxelMesh.setColorAt(i, _voxelColor);
-      const u = 1 - t;
-      voxelAlphaBuf[i] = linearGamma ? u : Math.pow(u, gamma);
+    if (state.mode === 's1') {
+      // Hue = θ/2π so adjacent angles map to adjacent hues — aligned
+      // domains read as solid same-color blobs and angle jumps show as
+      // sharp color boundaries.
+      const angles = state.angles;
+      for (let i = 0; i < total; i++) {
+        let t = voxelMisalignBuf[i] * inv;
+        if (t > 1) t = 1;
+        let hue = angles[i] * TWO_PI_INV;
+        hue -= Math.floor(hue);
+        _voxelColor.setHSL(hue, 0.85, 0.55);
+        voxelMesh.setColorAt(i, _voxelColor);
+        const u = 1 - t;
+        voxelAlphaBuf[i] = linearGamma ? u : Math.pow(u, gamma);
+      }
+    } else {
+      for (let i = 0; i < total; i++) {
+        let t = voxelMisalignBuf[i] * inv;
+        if (t > 1) t = 1;
+        const dx = dirsBuf[3*i    ];
+        const dy = dirsBuf[3*i + 1];
+        const dz = dirsBuf[3*i + 2];
+        // Azimuth → hue. Equatorial directions get full saturation; near the
+        // poles (dz → ±1) saturation drops, and we use lightness to tell +Z
+        // (lighter) from −Z (darker) since their azimuth degenerates to 0.
+        let hue = Math.atan2(dy, dx) * TWO_PI_INV;
+        if (hue < 0) hue += 1;
+        const sat = Math.sqrt(dx*dx + dy*dy);
+        const lum = 0.30 + 0.20 * (dz + 1);
+        _voxelColor.setHSL(hue, sat, lum);
+        voxelMesh.setColorAt(i, _voxelColor);
+        const u = 1 - t;
+        voxelAlphaBuf[i] = linearGamma ? u : Math.pow(u, gamma);
+      }
     }
   } else {
     // heat mode (default): misalignment-driven color and alpha.
@@ -2361,15 +2404,22 @@ function updateVoxelColors() {
 // rules. .mode-voxel is shown for either of them.
 function applyRenderMode() {
   const m = params.renderMode;
+  const isS1 = state && state.mode === 's1';
   const isVoxel = m === 'heat' || m === 'domains' || m === 'components';
   if (lines)     lines.visible     = m === 'axes';
   if (voxelMesh) voxelMesh.visible = isVoxel;
-  for (const el of document.querySelectorAll('.mode-axes'))
-    el.style.display = m === 'axes' ? '' : 'none';
-  for (const el of document.querySelectorAll('.mode-voxel'))
-    el.style.display = (m === 'heat' || m === 'domains') ? '' : 'none';
-  for (const el of document.querySelectorAll('.mode-components'))
-    el.style.display = m === 'components' ? '' : 'none';
+  // For each render-mode-gated label, hide it if the mode doesn't match,
+  // OR if it carries .so3-only and we're currently in S^1 (otherwise the
+  // mode-* rules would re-show quaternion-only sliders like tube length).
+  const gate = (sel, want) => {
+    for (const el of document.querySelectorAll(sel)) {
+      const hidden = !want || (isS1 && el.classList.contains('so3-only'));
+      el.style.display = hidden ? 'none' : '';
+    }
+  };
+  gate('.mode-axes',       m === 'axes');
+  gate('.mode-voxel',      m === 'heat' || m === 'domains');
+  gate('.mode-components', m === 'components');
   // Voxel-pair selection only makes sense in components mode.
   if (m !== 'components') _clearVoxelSelection();
 }
@@ -2413,33 +2463,46 @@ function animate() {
       obsMapDirty = false;
     }
   }
-  // Fill +Z directions and per-cell misalignment up-front — both feed
-  // multiple consumers (the +Z direction histogram, the misalignment
-  // 1-D histogram, the components computation, and several voxel modes).
-  // Computing once per frame here keeps them coherent.
-  fillZDirections(state, dirsBuf);
+  // Fill the per-frame derived buffers up front so all consumers (the
+  // direction histogram, the 1-D misalignment histogram, the components
+  // computation, and several voxel modes) see a coherent snapshot.
+  // dirsBuf is the per-cell +Z direction (so3) and feeds the spherical
+  // histogram and the "domains" voxel mode; in s1 mode it isn't used.
+  if (state.mode === 'so3') fillZDirections(state, dirsBuf);
   fillCellMisalignment(state, voxelMisalignBuf);
+  const total = params.N * params.N * params.N;
   if (params.renderMode === 'axes') {
-    fillAxesGeometry(state, params.axisLen, axesBuf, params.offsetCells);
+    if (state.mode === 's1') {
+      fillS1AxesGeometry(state, params.axisLen, axesBuf, params.offsetCells);
+    } else {
+      fillAxesGeometry(state, params.axisLen, axesBuf, params.offsetCells);
+    }
     lineGeom.attributes.position.needsUpdate = true;
   } else {
     updateVoxelColors();
   }
   updatePaths();
-  hist.update(dirsBuf, params.N * params.N * params.N);
+  if (state.mode === 's1') {
+    histAngle.update(state.angles, total);
+  } else {
+    hist.update(dirsBuf, total);
+  }
   drawMisalignHistogram();
-  if (_selCells.length === 2 && params.renderMode === 'components') {
-    // Re-sample around the loop every frame: the field may be evolving (if
-    // alignment is running), the threshold or offset may have changed, and
-    // either way the cheap cost (~SEL_NUM_SAMPLES interpolated lookups)
-    // keeps the inspector in sync with whatever's happening.
+  if (_selCells.length === 2 && params.renderMode === 'components'
+      && state.mode === 'so3') {
+    // The loop inspector is quaternion-specific (Z₂ winding test, rotation-
+    // vector ball, parallel-transport tubes); skip it in S^1 mode.
     _refreshLoopInspector();
   }
-  hist.syncCamera(camera);
   controls.update();
   renderer.render(scene, camera);
-  hist.render();
-  if (rotationBall) {
+  if (state.mode === 's1') {
+    histAngle.render();
+  } else {
+    hist.syncCamera(camera);
+    hist.render();
+  }
+  if (rotationBall && state.mode === 'so3') {
     rotationBall.syncCamera(camera);
     rotationBall.render();
   }
@@ -2476,6 +2539,7 @@ rebuildCube();
 rebuildGrid();
 buildPaths();
 hist = createDirectionHistogram(document.getElementById('histCanvas'));
+histAngle = createAngleHistogram(document.getElementById('angleHistCanvas'));
 misHistCanvas = document.getElementById('misHistCanvas');
 // Match the canvas backing-store to its CSS size for crisp 1-D bars.
 misHistCanvas.width  = misHistCanvas.clientWidth || 220;
@@ -2541,6 +2605,48 @@ applyPathsUI();
 // other range bindings just twiddle params consumed by per-frame updates.
 document.getElementById('voxelScale').addEventListener('input', updateVoxelTransforms);
 
+// Toggle UI + histogram visibility for the current value type. Called on
+// page load and whenever the user picks a different value type.
+function applyValueMode() {
+  const isS1 = state && state.mode === 's1';
+  // Hide quaternion-only controls + the rotation-ball column + the
+  // quat-around-loop plot in S^1 mode.
+  for (const el of document.querySelectorAll('.so3-only')) {
+    el.style.display = isS1 ? 'none' : '';
+  }
+  // Swap which histogram canvas is shown and rename the column header.
+  const histCv = document.getElementById('histCanvas');
+  const angleCv = document.getElementById('angleHistCanvas');
+  const histTitleEl = document.getElementById('histTitle');
+  if (histCv && angleCv && histTitleEl) {
+    histCv.style.display  = isS1 ? 'none' : '';
+    angleCv.style.display = isS1 ? '' : 'none';
+    histTitleEl.textContent = isS1 ? 'angle histogram (S¹)' : '+Z direction histogram';
+  }
+  // Components-mode loop inspector is quaternion-specific; clear any
+  // selection so its overlay meshes hide if the user is currently in it.
+  if (isS1) _clearVoxelSelection();
+  // The "paths-on" sub-controls follow the paths checkbox in SO(3); in S^1
+  // they should always stay hidden (the parent .paths label is so3-only).
+  applyPathsUI();
+  // Re-run applyRenderMode so the .mode-* visibility rules are reasserted
+  // on top of the .so3-only changes (e.g. tube-length stays hidden in S^1
+  // even when render mode is components).
+  applyRenderMode();
+}
+
+const valueModeEl = document.getElementById('valueMode');
+valueModeEl.value = params.valueMode;
+valueModeEl.addEventListener('change', () => {
+  params.valueMode = valueModeEl.value;
+  // Closing the observer panel before the swap — its quat-based stepping
+  // would crash on an angles-only state. rebuildGrid does this too, but
+  // do it here for clarity.
+  if (obsSim) closeObserverPanel();
+  rebuildGrid();        // builds a fresh state with the new mode
+  applyValueMode();     // toggle UI visibility around the new state
+});
+
 const renderModeEl = document.getElementById('renderMode');
 renderModeEl.value = params.renderMode;
 renderModeEl.addEventListener('change', () => {
@@ -2548,6 +2654,7 @@ renderModeEl.addEventListener('change', () => {
   applyRenderMode();
 });
 applyRenderMode();   // sync UI visibility with the initial mode
+applyValueMode();    // and with the initial value type
 
 document.getElementById('resetBtn').onclick = () => rebuildGrid();
 document.getElementById('pauseBtn').onclick = (e) => {
@@ -2615,22 +2722,24 @@ document.getElementById('refineBtn').onclick = () => {
   const oldN = params.N;
   const newN = oldN * 2;
   if (newN > 128) return;     // matches the N input's max
-  // Snapshot before rebuildGrid (which re-allocates state.quats).
-  const oldQuats = new Float32Array(state.quats);
+  // Snapshot the current per-cell payload before rebuildGrid re-allocates
+  // it. Stride is 4 in SO(3) (quaternion) and 1 in S^1 (angle).
+  const isS1 = state.mode === 's1';
+  const stride = isS1 ? 1 : 4;
+  const oldData = new Float32Array(isS1 ? state.angles : state.quats);
   params.N = newN;
   document.getElementById('N').value = String(newN);
   rebuildGrid();
   // Upscale: new cell (ix, iy, iz) inherits from old (⌊ix/2⌋, ⌊iy/2⌋, ⌊iz/2⌋).
-  const newQuats = state.quats;
+  const newData = isS1 ? state.angles : state.quats;
   for (let iz = 0; iz < newN; iz++) {
     for (let iy = 0; iy < newN; iy++) {
       for (let ix = 0; ix < newN; ix++) {
         const iN = (iz * newN + iy) * newN + ix;
         const iO = ((iz >> 1) * oldN + (iy >> 1)) * oldN + (ix >> 1);
-        newQuats[4*iN    ] = oldQuats[4*iO    ];
-        newQuats[4*iN + 1] = oldQuats[4*iO + 1];
-        newQuats[4*iN + 2] = oldQuats[4*iO + 2];
-        newQuats[4*iN + 3] = oldQuats[4*iO + 3];
+        for (let k = 0; k < stride; k++) {
+          newData[stride*iN + k] = oldData[stride*iO + k];
+        }
       }
     }
   }

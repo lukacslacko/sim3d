@@ -240,6 +240,85 @@ export function createDirectionHistogram(canvas) {
   };
 }
 
+// Polar (S^1) direction histogram. Bins angles ∈ [0, 2π) into NUM_BINS
+// wedges and draws each as an arc whose radial extent grows with the bin
+// count. Same external shape as createDirectionHistogram (update / render
+// / syncCamera) so the call sites can swap between them by reference.
+//
+// Hue per bin = bin center angle / 2π so the colors line up with the
+// "domains" voxel coloring (which also uses θ → hue in S^1 mode).
+export function createAngleHistogram(canvas) {
+  const NUM_BINS = 60;
+  const counts = new Uint32Array(NUM_BINS);
+  const ctx = canvas.getContext('2d');
+  // Match the canvas backing-store to its CSS size for crisp rendering.
+  function resize() {
+    canvas.width  = canvas.clientWidth  || 220;
+    canvas.height = canvas.clientHeight || 220;
+  }
+  resize();
+
+  return {
+    update(angles, count) {
+      counts.fill(0);
+      const inv = NUM_BINS / (2 * Math.PI);
+      for (let i = 0; i < count; i++) {
+        let theta = angles[i];
+        // Wrap negatives or values just above 2π that drift in from noise.
+        theta -= 2 * Math.PI * Math.floor(theta / (2 * Math.PI));
+        let b = (theta * inv) | 0;
+        if (b >= NUM_BINS) b = NUM_BINS - 1;
+        counts[b]++;
+      }
+    },
+    syncCamera() { /* no-op: 2D plot has no camera */ },
+    render() {
+      const w = canvas.width, h = canvas.height;
+      ctx.fillStyle = '#0a0d12';
+      ctx.fillRect(0, 0, w, h);
+      const cx = w / 2, cy = h / 2;
+      const rInner = Math.min(w, h) * 0.18;
+      const rOuter = Math.min(w, h) * 0.46;
+      const dr = rOuter - rInner;
+      let maxCount = 1;
+      for (let b = 0; b < NUM_BINS; b++) if (counts[b] > maxCount) maxCount = counts[b];
+      const inv = 1 / maxCount;
+      // The wedges. Canvas 2D angles are CW from +x; we flip y so +θ goes
+      // CCW from +x (standard math convention).
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(1, -1);
+      for (let b = 0; b < NUM_BINS; b++) {
+        const a0 = (b / NUM_BINS) * 2 * Math.PI;
+        const a1 = ((b + 1) / NUM_BINS) * 2 * Math.PI;
+        const t = counts[b] * inv;
+        const r1 = rInner + dr * t;
+        const lum = 0.18 + 0.42 * t;
+        ctx.fillStyle = `hsl(${(b + 0.5) / NUM_BINS * 360}, 85%, ${lum * 100}%)`;
+        ctx.beginPath();
+        ctx.arc(0, 0, r1,     a0, a1);
+        ctx.arc(0, 0, rInner, a1, a0, true);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.strokeStyle = '#2a3543';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(0, 0, rOuter, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, rInner, 0, 2 * Math.PI); ctx.stroke();
+      ctx.restore();
+      // Cardinal labels (drawn after restore so text isn't y-flipped).
+      ctx.fillStyle = '#7a8696';
+      ctx.font = '10px ui-sans-serif, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('0',    cx + rOuter + 10, cy);
+      ctx.fillText('π/2',  cx, cy - rOuter - 10);
+      ctx.fillText('π',    cx - rOuter - 10, cy);
+      ctx.fillText('3π/2', cx, cy + rOuter + 10);
+    },
+  };
+}
+
 // Dedup vertices of a non-indexed BufferGeometry by exact-coordinate hash
 // (rounded to 5 decimals to swallow subdivision float wobble).
 function _dedupVertices(positions) {

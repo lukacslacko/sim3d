@@ -1,13 +1,21 @@
 // Orientation-alignment grid: an N×N×N lattice of coordinate frames inside
 // a periodic cube. Positions are fixed; only orientations evolve. Each step,
-// every frame rotates a small fraction `eta` of the way toward the average
-// orientation of its 6 face-adjacent neighbors (with wrap). Optional Gaussian
-// noise per step prevents the system from locking on metastable defects.
+// every cell rotates a small fraction `eta` of the way toward the average
+// orientation of its 6 face-adjacent neighbors (with wrap). Optional noise
+// per step prevents the system from locking on metastable defects.
+//
+// Two value modes:
+//   'so3' — orientation is a unit quaternion in S³ (sign-fix to share a
+//           hemisphere with self before averaging; π₁(SO(3))=ℤ/2 so the
+//           defects are Z₂ disclination lines).
+//   's1'  — orientation is an angle in [0, 2π); the lerp is done on the
+//           (cos θ, sin θ) representation and atan2'd back to an angle.
 //
 // State layout (Float32Array typed, indexed (iz·N + iy)·N + ix):
 //   positions: 3 floats per cell — fixed grid points centered at (-L/2, L/2)³.
-//   quats:     4 floats per cell — orientation [x, y, z, w].
-//   scratch:   4 floats per cell — write target each step (then swap).
+//   quats:     4 floats per cell (so3 only).
+//   angles:    1 float per cell  (s1  only).
+//   scratch:   matched companion buffer for ping-pong each step.
 //
 // All math is local: no THREE.js dependency, so this can run under node for
 // tests and is cheap to call from the render loop.
@@ -18,14 +26,20 @@ const NEIGHBOR_OFFSETS = [
   [0, 0, -1], [0, 0, 1],
 ];
 
-export function createAlignGrid(N, L) {
+export function createAlignGrid(N, L, mode = 'so3') {
   const total = N * N * N;
   const state = {
+    mode,
     N, L, s: L / N,
     positions: new Float32Array(total * 3),
-    quats:     new Float32Array(total * 4),
-    scratch:   new Float32Array(total * 4),
   };
+  if (mode === 's1') {
+    state.angles  = new Float32Array(total);
+    state.scratch = new Float32Array(total);
+  } else {
+    state.quats   = new Float32Array(total * 4);
+    state.scratch = new Float32Array(total * 4);
+  }
   const half = 0.5 * L;
   const s = state.s;
   for (let iz = 0; iz < N; iz++) {
@@ -45,8 +59,17 @@ export function createAlignGrid(N, L) {
   return state;
 }
 
-// Replace every cell's quaternion with a uniform random rotation (Shoemake).
+// Replace every cell's value with a uniform random sample from its target
+// space (S³ via Shoemake for so3, [0, 2π) for s1).
 export function randomizeAlignGrid(state) {
+  if (state.mode === 's1') {
+    const { angles } = state;
+    const TAU = 2 * Math.PI;
+    for (let i = 0; i < angles.length; i++) {
+      angles[i] = Math.random() * TAU;
+    }
+    return;
+  }
   const { N, quats } = state;
   const total = N * N * N;
   for (let i = 0; i < total; i++) {
@@ -75,6 +98,7 @@ export function randomizeAlignGrid(state) {
 // [-noise, noise] before renormalization. Acts like temperature: high noise
 // keeps the system fluctuating; setting noise → 0 lets it freeze.
 export function stepAlign(state, eta, noise) {
+  if (state.mode === 's1') return _stepAlignS1(state, eta, noise);
   const { N, quats, scratch } = state;
   for (let iz = 0; iz < N; iz++) {
     for (let iy = 0; iy < N; iy++) {
@@ -203,14 +227,13 @@ export function fillZDirections(state, out) {
 }
 
 // Per-cell mean misalignment to its 6 face-adjacent neighbors. Writes to
-// out[] (length N³). Per neighbor we use 1 - (q · q')² ∈ [0, 1]:
-//   • 0  → q and q' represent the same SO(3) rotation (q' = ±q).
-//   • 1  → q and q' are 4D-orthogonal, i.e. 180° apart in SO(3).
-// Averaged over the 6 face-adjacent neighbors (with PBC). For a uniform-
-// random grid each cell has mean ~0.75; a perfectly aligned grid gives 0.
-// The visual "voxel" rendering colors each grid point by this scalar so
-// you can see where the system has converged and where defects persist.
+// out[] (length N³). Result ∈ [0, 1] in both modes:
+//   so3: 1 - (q · q')² — 0 ↔ same rotation (q' = ±q), 1 ↔ 180° apart.
+//   s1:  (1 − cos Δθ)/2 = sin²(Δθ/2) — 0 ↔ same angle, 1 ↔ θ' = θ+π.
+// Uniform-random grids give means ≈0.75 (so3) or ≈0.5 (s1); a perfectly
+// aligned grid gives 0. The voxel render colors each grid point by this.
 export function fillCellMisalignment(state, out) {
+  if (state.mode === 's1') return _fillCellMisalignmentS1(state, out);
   const { N, quats } = state;
   for (let iz = 0; iz < N; iz++) {
     for (let iy = 0; iy < N; iy++) {
@@ -239,10 +262,11 @@ export function fillCellMisalignment(state, out) {
   }
 }
 
-// Optional diagnostic: average of (1 - cos(θ_ij/2)²) across every face-
-// adjacent pair, where θ_ij is the rotation angle from cell i to cell j.
-// Returns 0 for a perfectly aligned grid, ~0.5 for uniformly random.
+// Optional diagnostic: average misalignment across every face-adjacent
+// pair (each pair counted once). Returns 0 for a perfectly aligned grid;
+// uniformly random ≈0.5 in either mode.
 export function meanNeighborMisalignment(state) {
+  if (state.mode === 's1') return _meanNeighborMisalignmentS1(state);
   const { N, quats } = state;
   let sum = 0, count = 0;
   for (let iz = 0; iz < N; iz++) {
@@ -266,4 +290,123 @@ export function meanNeighborMisalignment(state) {
     }
   }
   return count > 0 ? sum / count : 0;
+}
+
+// ─── S^1 (angle mod 2π) variants ───────────────────────────────────────────
+// One alignment step in S^1: average the 6 neighbors on the unit circle
+// (mean of cos+sin → atan2), then lerp self → avg in (cos, sin) space and
+// atan2 back. Equivalent to lerp+normalize for quaternions; gracefully
+// handles the modular wrap. Optional uniform angle noise per step.
+function _stepAlignS1(state, eta, noise) {
+  const { N, angles, scratch } = state;
+  const TAU = 2 * Math.PI;
+  for (let iz = 0; iz < N; iz++) {
+    for (let iy = 0; iy < N; iy++) {
+      for (let ix = 0; ix < N; ix++) {
+        const i = (iz * N + iy) * N + ix;
+        const theta = angles[i];
+        let cAvg = 0, sAvg = 0;
+        for (let nb = 0; nb < 6; nb++) {
+          const off = NEIGHBOR_OFFSETS[nb];
+          const jx = ((ix + off[0]) % N + N) % N;
+          const jy = ((iy + off[1]) % N + N) % N;
+          const jz = ((iz + off[2]) % N + N) % N;
+          const j = (jz * N + jy) * N + jx;
+          cAvg += Math.cos(angles[j]);
+          sAvg += Math.sin(angles[j]);
+        }
+        let avgTheta;
+        if (cAvg*cAvg + sAvg*sAvg > 1e-16) avgTheta = Math.atan2(sAvg, cAvg);
+        else avgTheta = theta;
+        // (cos, sin)-space lerp toward avg, then atan2 back to an angle.
+        let nc = (1 - eta) * Math.cos(theta) + eta * Math.cos(avgTheta);
+        let ns = (1 - eta) * Math.sin(theta) + eta * Math.sin(avgTheta);
+        let next = Math.atan2(ns, nc);
+        if (noise > 0) next += (Math.random() * 2 - 1) * noise;
+        // Wrap into [0, 2π).
+        next -= TAU * Math.floor(next / TAU);
+        scratch[i] = next;
+      }
+    }
+  }
+  state.angles = scratch;
+  state.scratch = angles;
+}
+
+function _fillCellMisalignmentS1(state, out) {
+  const { N, angles } = state;
+  for (let iz = 0; iz < N; iz++) {
+    for (let iy = 0; iy < N; iy++) {
+      for (let ix = 0; ix < N; ix++) {
+        const i = (iz * N + iy) * N + ix;
+        const theta = angles[i];
+        let sum = 0;
+        for (let nb = 0; nb < 6; nb++) {
+          const off = NEIGHBOR_OFFSETS[nb];
+          const jx = ((ix + off[0]) % N + N) % N;
+          const jy = ((iy + off[1]) % N + N) % N;
+          const jz = ((iz + off[2]) % N + N) % N;
+          const j = (jz * N + jy) * N + jx;
+          // (1 − cos Δθ)/2 = sin²(Δθ/2) ∈ [0, 1].
+          sum += 0.5 * (1 - Math.cos(angles[j] - theta));
+        }
+        out[i] = sum * (1 / 6);
+      }
+    }
+  }
+}
+
+function _meanNeighborMisalignmentS1(state) {
+  const { N, angles } = state;
+  let sum = 0, count = 0;
+  for (let iz = 0; iz < N; iz++) {
+    for (let iy = 0; iy < N; iy++) {
+      for (let ix = 0; ix < N; ix++) {
+        const i = (iz * N + iy) * N + ix;
+        const theta = angles[i];
+        for (let d = 0; d < 3; d++) {
+          const jx = d === 0 ? (ix + 1) % N : ix;
+          const jy = d === 1 ? (iy + 1) % N : iy;
+          const jz = d === 2 ? (iz + 1) % N : iz;
+          const j = (jz * N + jy) * N + jx;
+          sum += 0.5 * (1 - Math.cos(angles[j] - theta));
+          count++;
+        }
+      }
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+// Fill out[] (length N³ · 18) with one (cos θ, sin θ, 0) line per cell.
+// Writes into the same 18-floats-per-cell layout as fillAxesGeometry so
+// the same line mesh works unchanged: only the "X axis" slot draws a
+// real segment; the Y/Z slots are degenerate (origin == end) and render
+// as zero-length lines.
+export function fillS1AxesGeometry(state, axisLen, out, offsetCells) {
+  const { N, L, s, positions, angles } = state;
+  const half = 0.5 * L;
+  const offX = offsetCells ? offsetCells[0] * s : 0;
+  const offY = offsetCells ? offsetCells[1] * s : 0;
+  const offZ = offsetCells ? offsetCells[2] * s : 0;
+  const total = N * N * N;
+  for (let i = 0; i < total; i++) {
+    let px = positions[3*i    ] + offX;
+    let py = positions[3*i + 1] + offY;
+    let pz = positions[3*i + 2] + offZ;
+    px -= L * Math.floor((px + half) / L);
+    py -= L * Math.floor((py + half) / L);
+    pz -= L * Math.floor((pz + half) / L);
+    const c = Math.cos(angles[i]);
+    const sn = Math.sin(angles[i]);
+    const ci = i * 18;
+    // X-axis slot: real segment along (cos θ, sin θ, 0).
+    out[ci     ] = px;             out[ci +  1] = py;              out[ci +  2] = pz;
+    out[ci +  3] = px + c*axisLen; out[ci +  4] = py + sn*axisLen; out[ci +  5] = pz;
+    // Y, Z slots: degenerate so they draw nothing.
+    out[ci +  6] = px; out[ci +  7] = py; out[ci +  8] = pz;
+    out[ci +  9] = px; out[ci + 10] = py; out[ci + 11] = pz;
+    out[ci + 12] = px; out[ci + 13] = py; out[ci + 14] = pz;
+    out[ci + 15] = px; out[ci + 16] = py; out[ci + 17] = pz;
+  }
 }
