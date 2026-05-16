@@ -109,6 +109,7 @@
   <label class="paths-on so3-only" title="Number of streamline seeds along each axis on the seeding face. Total streamlines = seeds².">seeds/side <input id="pathSeeds" type="range" min="2" max="20" step="1" value="10"></label>
   <label class="paths-on so3-only" title="Streamline integration step as a fraction of the grid spacing. Smaller = smoother curves, more vertices, slightly more CPU; larger = chunkier but cheaper.">step size <input id="pathStepFrac" type="range" min="0.25" max="1.0" step="0.05" value="0.5"></label>
   <hr class="so3-only">
+  <label class="so3-only" title="Refractive index of space at each point is n = 1 + α · misalignment(x). Geodesics — both the observer-sim ray-march that places the test-particle grid and the circle-loop's perpendicular tube paths — bend by (α/n)·∇⊥m·ds per step. α=0 = straight lines (off). α>0 pulls rays toward high-misalignment (defect) regions; α<0 pushes them away.">refractive α <input id="refractiveAlpha" type="range" min="-5" max="5" step="0.05" value="0"></label>
   <label class="so3-only" title="Edge length, in world units, of the rectilinear grid of test particles dropped in the observer's local xy-plane when 'simulate' is pressed. Each particle sits at the geodesic distance equal to its planar distance from the observer (xy-tangent ray-march).">obs grid size <input id="obsGridSize" type="range" min="0.5" max="20" step="0.25" value="4.5"></label>
   <label class="so3-only" title="Number of test particles along each edge of the grid. Total = N². Cost scales as N²·numSteps.">obs grid N <input id="obsGridN" type="number" min="3" max="25" step="2" value="9"></label>
   <label class="so3-only" title="Observer proper-time step. Each tick advances the observer by dt · e_z(p_obs).">obs dt <input id="obsDt" type="range" min="0.01" max="1.0" step="0.01" value="0.1"></label>
@@ -211,6 +212,10 @@ const params = {
   showPaths: false,
   pathSeeds: 10,
   pathStepFrac: 0.5,
+  // Refractive index n(x) = 1 + α · misalignment(x). Used by the observer
+  // ray-march in setupObserverSim and by the circle-loop tube paths in
+  // updateCircle. α = 0 disables (straight lines, original behavior).
+  refractiveAlpha: 0,
   // Observer simulation parameters (read at simulate-button click time).
   obsGridSize: 4.5,            // edge length of the rectilinear test-particle grid
   obsGridN: 9,                 // particles per edge → total = N²
@@ -916,6 +921,7 @@ function setupObserverSim() {
         let dz = cosT * _exScratch[2] + sinT * _eyScratch[2];
         let px = obsPos[0], py = obsPos[1], pz = obsPos[2];
         let arc = 0;
+        const alpha = params.refractiveAlpha;
         while (arc < r) {
           const stepLen = Math.min(ds, r - arc);
           px += dx * stepLen; py += dy * stepLen; pz += dz * stepLen;
@@ -924,6 +930,22 @@ function setupObserverSim() {
           px -= L * Math.floor((px + half) / L);
           py -= L * Math.floor((py + half) / L);
           pz -= L * Math.floor((pz + half) / L);
+          // Refractive-index bend: d(dir)/ds = (α/n)·∇⊥m, n = 1 + α·m.
+          // ∇⊥m is the part of ∇m perpendicular to current direction.
+          // Done before the local-+Z re-projection so the projection
+          // sweeps any out-of-plane component back into observer space.
+          if (alpha !== 0) {
+            const m = _sampleMisalignGradLogical(px, py, pz, _gradScratch);
+            const n = 1 + alpha * m;
+            if (Math.abs(n) > 1e-6) {
+              const gx = _gradScratch[0], gy = _gradScratch[1], gz = _gradScratch[2];
+              const gdotd = gx*dx + gy*dy + gz*dz;
+              const k = (alpha / n) * stepLen;
+              dx += k * (gx - gdotd*dx);
+              dy += k * (gy - gdotd*dy);
+              dz += k * (gz - gdotd*dz);
+            }
+          }
           // Re-orient direction: project out local +Z at new pos.
           localQuatAt([px, py, pz], _qScratch);
           frameFromQuat(_qScratch, _exScratch2, _eyScratch2, _ezScratch2);
@@ -1659,6 +1681,54 @@ function _sampleQuatLogical(pos, ref, out) {
   else { out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 1; }
 }
 
+// Trilinear-sample the cell-centered misalignment field at a logical world
+// position, with PBC. Returns m and (in `outGrad`) the analytic gradient
+// ∂m/∂x in world units — i.e. the trilinear basis's exact derivative, not
+// a separate finite difference. Used to bend geodesics by the local
+// refractive index n = 1 + α·m  (rays bend with d(dir)/ds = (α/n)·∇⊥m).
+function _sampleMisalignGradLogical(lx, ly, lz, outGrad) {
+  if (!voxelMisalignBuf) { outGrad[0] = outGrad[1] = outGrad[2] = 0; return 0; }
+  const N = params.N, L = params.cubeSize;
+  const half = 0.5 * L, inv_s = N / L, s = L / N;
+  const fx = (lx + half) * inv_s - 0.5;
+  const fy = (ly + half) * inv_s - 0.5;
+  const fz = (lz + half) * inv_s - 0.5;
+  const ix0 = Math.floor(fx), iy0 = Math.floor(fy), iz0 = Math.floor(fz);
+  const tx = fx - ix0, ty = fy - iy0, tz = fz - iz0;
+  const cix0 = ((ix0 % N) + N) % N, ciy0 = ((iy0 % N) + N) % N, ciz0 = ((iz0 % N) + N) % N;
+  const cix1 = (cix0 + 1) % N,      ciy1 = (ciy0 + 1) % N,      ciz1 = (ciz0 + 1) % N;
+  const M = voxelMisalignBuf;
+  const c000 = M[(ciz0 * N + ciy0) * N + cix0];
+  const c100 = M[(ciz0 * N + ciy0) * N + cix1];
+  const c010 = M[(ciz0 * N + ciy1) * N + cix0];
+  const c110 = M[(ciz0 * N + ciy1) * N + cix1];
+  const c001 = M[(ciz1 * N + ciy0) * N + cix0];
+  const c101 = M[(ciz1 * N + ciy0) * N + cix1];
+  const c011 = M[(ciz1 * N + ciy1) * N + cix0];
+  const c111 = M[(ciz1 * N + ciy1) * N + cix1];
+  // Trilinear value.
+  const c00 = c000*(1-tx) + c100*tx;
+  const c10 = c010*(1-tx) + c110*tx;
+  const c01 = c001*(1-tx) + c101*tx;
+  const c11 = c011*(1-tx) + c111*tx;
+  const c0  = c00*(1-ty)  + c10*ty;
+  const c1  = c01*(1-ty)  + c11*ty;
+  const m   = c0*(1-tz)   + c1*tz;
+  // Analytic partials of the trilinear basis (in unit-cell coords), then
+  // chain-rule the 1/s to get the world-unit gradient.
+  const dx_lo = (c100 - c000)*(1-ty) + (c110 - c010)*ty;
+  const dx_hi = (c101 - c001)*(1-ty) + (c111 - c011)*ty;
+  const dy_lo = (c010 - c000)*(1-tx) + (c110 - c100)*tx;
+  const dy_hi = (c011 - c001)*(1-tx) + (c111 - c101)*tx;
+  const inv_s_one = 1 / s;
+  outGrad[0] = (dx_lo*(1-tz) + dx_hi*tz) * inv_s_one;
+  outGrad[1] = (dy_lo*(1-tz) + dy_hi*tz) * inv_s_one;
+  outGrad[2] = (c1 - c0) * inv_s_one;
+  return m;
+}
+const _gradScratch = [0, 0, 0];
+
+
 function _selectVoxel(cellIdx) {
   if (_selCells.indexOf(cellIdx) !== -1) return;     // ignore re-click on same cell
   if (_selCells.length >= 2) _selCells.length = 0;   // 3rd click resets
@@ -1931,9 +2001,9 @@ function _refreshLoopInspector() {
           let tcx = 2*(cqy*vWz - cqz*vWy);
           let tcy = 2*(cqz*vWx - cqx*vWz);
           let tcz = 2*(cqx*vWy - cqy*vWx);
-          const vLx = vWx + cqw*tcx + (cqy*tcz - cqz*tcy);
-          const vLy = vWy + cqw*tcy + (cqz*tcx - cqx*tcz);
-          const vLz = vWz + cqw*tcz + (cqx*tcy - cqy*tcx);
+          let vLx = vWx + cqw*tcx + (cqy*tcz - cqz*tcy);
+          let vLy = vWy + cqw*tcy + (cqz*tcx - cqx*tcz);
+          let vLz = vWz + cqw*tcz + (cqx*tcy - cqy*tcx);
           // q_prev tracks the previous step's quaternion so each new sample
           // is sign-fixed continuously along the path.
           tQprev[0] = sQx; tQprev[1] = sQy; tQprev[2] = sQz; tQprev[3] = sQw;
@@ -1969,6 +2039,42 @@ function _refreshLoopInspector() {
             vWx = vLx + qw*tx2 + (qy*tz2 - qz*ty2);
             vWy = vLy + qw*ty2 + (qz*tx2 - qx*tz2);
             vWz = vLz + qw*tz2 + (qx*ty2 - qy*tx2);
+
+            // Refractive-index bend on top of parallel transport. Same
+            // formula as the observer ray-march: d(v̂)/ds = (α/n)·∇⊥m.
+            // After bending vW we re-derive V_local from the bent vW so
+            // the next step's parallel transport carries the deflection
+            // forward instead of resetting to the seed-time tangent.
+            const alpha = params.refractiveAlpha;
+            if (alpha !== 0) {
+              const m = _sampleMisalignGradLogical(lx, ly, lz, _gradScratch);
+              const n = 1 + alpha * m;
+              if (Math.abs(n) > 1e-6) {
+                const speed = Math.hypot(vWx, vWy, vWz);
+                if (speed > 1e-8) {
+                  const ux = vWx / speed, uy = vWy / speed, uz = vWz / speed;
+                  const gx = _gradScratch[0], gy = _gradScratch[1], gz = _gradScratch[2];
+                  const gdotu = gx*ux + gy*uy + gz*uz;
+                  const k = (alpha / n) * stepSize;
+                  let nWx = vWx + speed * k * (gx - gdotu*ux);
+                  let nWy = vWy + speed * k * (gy - gdotu*uy);
+                  let nWz = vWz + speed * k * (gz - gdotu*uz);
+                  // Keep |v| = 1 so stepSize stays a true arc length.
+                  const nLen = Math.hypot(nWx, nWy, nWz);
+                  if (nLen > 1e-8) {
+                    vWx = nWx / nLen; vWy = nWy / nLen; vWz = nWz / nLen;
+                  }
+                  // V_local ← R(q)⁻¹ · V_world for the updated vW.
+                  const bcqx = -qx, bcqy = -qy, bcqz = -qz, bcqw = qw;
+                  const btcx = 2*(bcqy*vWz - bcqz*vWy);
+                  const btcy = 2*(bcqz*vWx - bcqx*vWz);
+                  const btcz = 2*(bcqx*vWy - bcqy*vWx);
+                  vLx = vWx + bcqw*btcx + (bcqy*btcz - bcqz*btcy);
+                  vLy = vWy + bcqw*btcy + (bcqz*btcx - bcqx*btcz);
+                  vLz = vWz + bcqw*btcz + (bcqx*btcy - bcqy*btcx);
+                }
+              }
+            }
             // Carry q forward as q_prev for the next step.
             tQprev[0] = qx; tQprev[1] = qy; tQprev[2] = qz; tQprev[3] = qw;
 
@@ -2588,6 +2694,7 @@ bindRange('misThreshold', 'misThreshold');
 bindRange('tubeLength', 'tubeLength');
 bindRange('pathSeeds', 'pathSeeds');
 bindRange('pathStepFrac', 'pathStepFrac');
+bindRange('refractiveAlpha', 'refractiveAlpha');
 bindRange('obsGridSize', 'obsGridSize');
 bindNumber('obsGridN', 'obsGridN');
 bindRange('obsDt', 'obsDt');
